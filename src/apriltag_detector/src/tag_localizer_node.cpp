@@ -61,7 +61,7 @@ public:
     this->declare_parameter<int>("depth_max_mm", 2000);
 
     // Depth sampling (robust median window)
-    this->declare_parameter<int>("depth_window_radius", 5);
+    this->declare_parameter<int>("depth_window_radius", 3);
     this->declare_parameter<int>("depth_min_valid_count", 10);
     this->declare_parameter<int>("depth_outlier_thresh_mm", 10);
 
@@ -69,7 +69,7 @@ public:
     this->declare_parameter<std::string>("cad_yaml_path", "config/tag_cad_points.yaml");
 
     // Point quality filtering parameters
-    this->declare_parameter<double>("min_decision_margin", 70.0);
+    this->declare_parameter<double>("min_decision_margin", 60.0);
     this->declare_parameter<double>("depth_variance_threshold_mm", 50.0);
     this->declare_parameter<int>("min_tag_coverage", 2);
 
