@@ -1,6 +1,9 @@
 import sys
 from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Optional
 
+import cv2
 import numpy as np
 import rclpy
 from cv_bridge import CvBridge
@@ -10,6 +13,7 @@ from PyQt5.QtWidgets import (
     QApplication,
     QGridLayout,
     QGroupBox,
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -30,14 +34,18 @@ class CommandDefinition:
     command: str
 
 
+WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
+
+
 class CommandRunner(QObject):
     output_signal = pyqtSignal(str)
     status_signal = pyqtSignal(str)
 
-    def __init__(self, name: str, command: str):
+    def __init__(self, name: str, command: str, working_dir: Optional[Path] = None):
         super().__init__()
         self.name = name
         self.command = command
+        self.working_dir = working_dir
         self.process = QProcess()
         self.process.setProcessChannelMode(QProcess.MergedChannels)
         self.process.readyReadStandardOutput.connect(self._handle_output)
@@ -49,6 +57,8 @@ class CommandRunner(QObject):
         if self.process.state() != QProcess.NotRunning:
             return
         self.command = command
+        if self.working_dir is not None:
+            self.process.setWorkingDirectory(str(self.working_dir))
         self.process.start("bash", ["-lc", self.command])
 
     def stop(self) -> None:
@@ -129,11 +139,12 @@ class RosInterface(QObject):
             return qimage.copy()
 
         if cv_image.shape[2] == 3:
+            encoding = msg.encoding.lower()
+            if encoding.startswith("bgr"):
+                cv_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
             height, width, _ = cv_image.shape
             bytes_per_line = 3 * width
-            encoding = msg.encoding.lower()
-            image_format = QImage.Format_RGB888 if encoding.startswith("rgb") else QImage.Format_BGR888
-            qimage = QImage(cv_image.data, width, height, bytes_per_line, image_format)
+            qimage = QImage(cv_image.data, width, height, bytes_per_line, QImage.Format_RGB888)
             return qimage.copy()
 
         height, width, _ = cv_image.shape
@@ -143,11 +154,20 @@ class RosInterface(QObject):
 
 
 class CommandControl(QWidget):
-    def __init__(self, command_def: CommandDefinition, log_output: QTextEdit) -> None:
+    def __init__(
+        self,
+        command_def: CommandDefinition,
+        log_output: QTextEdit,
+        working_dir: Optional[Path] = None,
+    ) -> None:
         super().__init__()
         self.command_def = command_def
         self.log_output = log_output
-        self.runner = CommandRunner(command_def.name, command_def.command)
+        self.runner = CommandRunner(
+            command_def.name,
+            command_def.command,
+            working_dir=working_dir,
+        )
         self.runner.output_signal.connect(self._append_log)
         self.runner.status_signal.connect(self._update_status)
 
@@ -209,7 +229,11 @@ class MainWindow(QMainWindow):
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
 
-        self.build_runner = CommandRunner("build", "colcon build --symlink-install")
+        self.build_runner = CommandRunner(
+            "build",
+            "colcon build --symlink-install",
+            working_dir=WORKSPACE_ROOT,
+        )
         self.build_runner.output_signal.connect(self._append_log)
         self.build_runner.status_signal.connect(self._append_status)
 
@@ -228,18 +252,45 @@ class MainWindow(QMainWindow):
             CommandDefinition("Tag Localizer", "ros2 run apriltag_detector tag_localizer_node"),
             CommandDefinition("HandEye Logger", "ros2 run handeye_logger handeye_logger"),
             CommandDefinition("RTDE Action", "ros2 run rtde_controller rtde_action_node"),
+            CommandDefinition(
+                "Run Calibration Poses",
+                "bash scripts/handeye/run_calib_poses.sh",
+            ),
+            CommandDefinition(
+                "Solve Handeye",
+                "bash scripts/handeye/run_solver.sh",
+            ),
+            CommandDefinition(
+                "Verify Repeatability (ROS)",
+                "ros2 run handeye_verify verify_repeatability",
+            ),
+            CommandDefinition(
+                "Verify Repeatability (Script)",
+                "bash scripts/handeye/verify/run_repeatability_test.sh",
+            ),
+            CommandDefinition(
+                "Verify Dynamic Consistency",
+                "ros2 run handeye_verify verify_dynamic_consistency "
+                "--csv handeye_samples.csv --tbc 0 0 0 0 0 0 1",
+            ),
         ]
 
-        command_group = QGroupBox("Node Launchers")
+        command_group = QGroupBox("Workflow Controls")
         command_layout = QVBoxLayout()
         for command in commands:
-            control = CommandControl(command, self.log_output)
+            control = CommandControl(command, self.log_output, working_dir=WORKSPACE_ROOT)
             self.command_controls.append(control)
             command_layout.addWidget(control)
         command_group.setLayout(command_layout)
 
-        self.real_topic_edit = QLineEdit("/color/image_raw")
-        self.sim_topic_edit = QLineEdit("/simulation/image")
+        self.real_topic_edit = self._build_topic_selector(
+            "/color/image_raw",
+            ["/color/image_raw", "/depth/image_raw", "/depth/aligned_depth_to_color"],
+        )
+        self.sim_topic_edit = self._build_topic_selector(
+            "/simulation/image",
+            ["/simulation/image", "/sim/image_raw", "/sim/color/image_raw"],
+        )
         self.real_apply_button = QPushButton("Apply")
         self.sim_apply_button = QPushButton("Apply")
         self.real_apply_button.clicked.connect(self._apply_real_topic)
@@ -287,7 +338,14 @@ class MainWindow(QMainWindow):
         self.spin_timer.timeout.connect(self._spin_ros)
         self.spin_timer.start(10)
 
-    def _build_image_group(self, title: str, topic_edit: QLineEdit, button: QPushButton) -> QGroupBox:
+    def _build_topic_selector(self, default: str, options: List[str]) -> QComboBox:
+        selector = QComboBox()
+        selector.setEditable(True)
+        selector.addItems(options)
+        selector.setCurrentText(default)
+        return selector
+
+    def _build_image_group(self, title: str, topic_edit: QComboBox, button: QPushButton) -> QGroupBox:
         group = QGroupBox(title)
         layout = QVBoxLayout()
         topic_row = QHBoxLayout()
@@ -302,10 +360,10 @@ class MainWindow(QMainWindow):
         self.build_runner.start(self.build_command_edit.text())
 
     def _apply_real_topic(self) -> None:
-        self.ros_interface.set_real_topic(self.real_topic_edit.text())
+        self.ros_interface.set_real_topic(self.real_topic_edit.currentText())
 
     def _apply_sim_topic(self) -> None:
-        self.ros_interface.set_sim_topic(self.sim_topic_edit.text())
+        self.ros_interface.set_sim_topic(self.sim_topic_edit.currentText())
 
     def _spin_ros(self) -> None:
         rclpy.spin_once(self.ros_interface.node, timeout_sec=0)

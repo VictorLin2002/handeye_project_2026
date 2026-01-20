@@ -20,6 +20,7 @@ setup(
         'console_scripts': [
             'verify_tag4_simple = handeye_verify.verify_tag4_simple:main',
             'verify_repeatability = handeye_verify.verify_repeatability:main',
+            'verify_dynamic_consistency = handeye_verify.verify_dynamic_consistency:main',
         ],
     },
 )
