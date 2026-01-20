@@ -1,8 +1,6 @@
 import sys
 from dataclasses import dataclass
-from typing import List
 
-import cv2
 import numpy as np
 import rclpy
 from cv_bridge import CvBridge
@@ -12,7 +10,6 @@ from PyQt5.QtWidgets import (
     QApplication,
     QGridLayout,
     QGroupBox,
-    QComboBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -132,12 +129,11 @@ class RosInterface(QObject):
             return qimage.copy()
 
         if cv_image.shape[2] == 3:
-            encoding = msg.encoding.lower()
-            if encoding.startswith("bgr"):
-                cv_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
             height, width, _ = cv_image.shape
             bytes_per_line = 3 * width
-            qimage = QImage(cv_image.data, width, height, bytes_per_line, QImage.Format_RGB888)
+            encoding = msg.encoding.lower()
+            image_format = QImage.Format_RGB888 if encoding.startswith("rgb") else QImage.Format_BGR888
+            qimage = QImage(cv_image.data, width, height, bytes_per_line, image_format)
             return qimage.copy()
 
         height, width, _ = cv_image.shape
@@ -232,22 +228,6 @@ class MainWindow(QMainWindow):
             CommandDefinition("Tag Localizer", "ros2 run apriltag_detector tag_localizer_node"),
             CommandDefinition("HandEye Logger", "ros2 run handeye_logger handeye_logger"),
             CommandDefinition("RTDE Action", "ros2 run rtde_controller rtde_action_node"),
-            CommandDefinition(
-                "Run Calibration Poses",
-                "bash scripts/handeye/run_calib_poses.sh",
-            ),
-            CommandDefinition(
-                "Solve Handeye",
-                "bash scripts/handeye/run_solver.sh",
-            ),
-            CommandDefinition(
-                "Verify Repeatability (ROS)",
-                "ros2 run handeye_verify verify_repeatability",
-            ),
-            CommandDefinition(
-                "Verify Repeatability (Script)",
-                "bash scripts/handeye/verify/run_repeatability_test.sh",
-            ),
         ]
 
         command_group = QGroupBox("Node Launchers")
@@ -258,14 +238,8 @@ class MainWindow(QMainWindow):
             command_layout.addWidget(control)
         command_group.setLayout(command_layout)
 
-        self.real_topic_edit = self._build_topic_selector(
-            "/color/image_raw",
-            ["/color/image_raw", "/depth/image_raw", "/depth/aligned_depth_to_color"],
-        )
-        self.sim_topic_edit = self._build_topic_selector(
-            "/simulation/image",
-            ["/simulation/image", "/sim/image_raw", "/sim/color/image_raw"],
-        )
+        self.real_topic_edit = QLineEdit("/color/image_raw")
+        self.sim_topic_edit = QLineEdit("/simulation/image")
         self.real_apply_button = QPushButton("Apply")
         self.sim_apply_button = QPushButton("Apply")
         self.real_apply_button.clicked.connect(self._apply_real_topic)
@@ -313,14 +287,7 @@ class MainWindow(QMainWindow):
         self.spin_timer.timeout.connect(self._spin_ros)
         self.spin_timer.start(10)
 
-    def _build_topic_selector(self, default: str, options: List[str]) -> QComboBox:
-        selector = QComboBox()
-        selector.setEditable(True)
-        selector.addItems(options)
-        selector.setCurrentText(default)
-        return selector
-
-    def _build_image_group(self, title: str, topic_edit: QComboBox, button: QPushButton) -> QGroupBox:
+    def _build_image_group(self, title: str, topic_edit: QLineEdit, button: QPushButton) -> QGroupBox:
         group = QGroupBox(title)
         layout = QVBoxLayout()
         topic_row = QHBoxLayout()
@@ -335,10 +302,10 @@ class MainWindow(QMainWindow):
         self.build_runner.start(self.build_command_edit.text())
 
     def _apply_real_topic(self) -> None:
-        self.ros_interface.set_real_topic(self.real_topic_edit.currentText())
+        self.ros_interface.set_real_topic(self.real_topic_edit.text())
 
     def _apply_sim_topic(self) -> None:
-        self.ros_interface.set_sim_topic(self.sim_topic_edit.currentText())
+        self.ros_interface.set_sim_topic(self.sim_topic_edit.text())
 
     def _spin_ros(self) -> None:
         rclpy.spin_once(self.ros_interface.node, timeout_sec=0)
