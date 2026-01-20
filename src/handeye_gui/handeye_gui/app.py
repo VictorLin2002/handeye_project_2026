@@ -67,6 +67,9 @@ class CommandRunner(QObject):
         self.process.terminate()
         if not self.process.waitForFinished(2000):
             self.process.kill()
+            self.process.waitForFinished(2000)
+        self.process.close()
+        self.status_signal.emit("stopped")
 
     def _handle_output(self) -> None:
         text = bytes(self.process.readAllStandardOutput()).decode(errors="replace")
@@ -228,6 +231,10 @@ class MainWindow(QMainWindow):
 
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
+        self.log_output.setPlaceholderText("Streaming logs (frequent updates)")
+        self.event_log_output = QTextEdit()
+        self.event_log_output.setReadOnly(True)
+        self.event_log_output.setPlaceholderText("Event logs (start/stop/status)")
 
         self.build_runner = CommandRunner(
             "build",
@@ -246,7 +253,17 @@ class MainWindow(QMainWindow):
         build_layout.addWidget(self.build_command_edit, stretch=1)
         build_layout.addWidget(self.build_button)
 
+        self.tbc_edit = QLineEdit("0 0 0 0 0 0 1")
+        self.tbc_apply_button = QPushButton("Apply TBC")
+        self.tbc_apply_button.clicked.connect(self._apply_tbc)
+
+        tbc_layout = QHBoxLayout()
+        tbc_layout.addWidget(QLabel("Base->Camera (TBC) [x y z qx qy qz qw]"))
+        tbc_layout.addWidget(self.tbc_edit, stretch=1)
+        tbc_layout.addWidget(self.tbc_apply_button)
+
         self.command_controls = []
+        self.dynamic_consistency_control = None
         commands = [
             CommandDefinition("Kinect", "ros2 run kinect kinect_node"),
             CommandDefinition("Tag Localizer", "ros2 run apriltag_detector tag_localizer_node"),
@@ -265,10 +282,6 @@ class MainWindow(QMainWindow):
                 "ros2 run handeye_verify verify_repeatability",
             ),
             CommandDefinition(
-                "Verify Repeatability (Script)",
-                "bash scripts/handeye/verify/run_repeatability_test.sh",
-            ),
-            CommandDefinition(
                 "Verify Dynamic Consistency",
                 "ros2 run handeye_verify verify_dynamic_consistency "
                 "--csv handeye_samples.csv --tbc 0 0 0 0 0 0 1",
@@ -279,6 +292,8 @@ class MainWindow(QMainWindow):
         command_layout = QVBoxLayout()
         for command in commands:
             control = CommandControl(command, self.log_output, working_dir=WORKSPACE_ROOT)
+            if command.name == "Verify Dynamic Consistency":
+                self.dynamic_consistency_control = control
             self.command_controls.append(control)
             command_layout.addWidget(control)
         command_group.setLayout(command_layout)
@@ -321,10 +336,13 @@ class MainWindow(QMainWindow):
 
         main_layout = QVBoxLayout()
         main_layout.addLayout(build_layout)
+        main_layout.addLayout(tbc_layout)
         main_layout.addWidget(command_group)
         main_layout.addLayout(images_layout)
         main_layout.addWidget(status_group)
-        main_layout.addWidget(QLabel("Logs"))
+        main_layout.addWidget(QLabel("Event Logs"))
+        main_layout.addWidget(self.event_log_output)
+        main_layout.addWidget(QLabel("Streaming Logs"))
         main_layout.addWidget(self.log_output)
 
         container = QWidget()
@@ -359,6 +377,17 @@ class MainWindow(QMainWindow):
     def _run_build(self) -> None:
         self.build_runner.start(self.build_command_edit.text())
 
+    def _apply_tbc(self) -> None:
+        if self.dynamic_consistency_control is None:
+            return
+        tbc_value = self.tbc_edit.text().strip()
+        command = (
+            "ros2 run handeye_verify verify_dynamic_consistency "
+            f"--csv handeye_samples.csv --tbc {tbc_value}"
+        )
+        self.dynamic_consistency_control.command_edit.setText(command)
+        self._append_status(f"TBC updated: {tbc_value}")
+
     def _apply_real_topic(self) -> None:
         self.ros_interface.set_real_topic(self.real_topic_edit.currentText())
 
@@ -375,7 +404,9 @@ class MainWindow(QMainWindow):
 
     def _append_status(self, text: str) -> None:
         self.status_label.setText(text)
-        self._append_log(f"[status] {text}\n")
+        self.event_log_output.moveCursor(QTextCursor.End)
+        self.event_log_output.insertPlainText(f"[status] {text}\n")
+        self.event_log_output.moveCursor(QTextCursor.End)
 
     def _update_real_image(self, image: QImage) -> None:
         self._last_real_image = image

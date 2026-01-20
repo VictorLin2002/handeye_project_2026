@@ -96,27 +96,35 @@ def load_samples(csv_path: str) -> List[Tuple[Pose6D, PoseQuat]]:
     import csv
 
     samples = []
+    skipped = 0
     with open(csv_path, newline="") as csvfile:
         reader = csv.DictReader(csvfile)
-        for row in reader:
-            base_tcp = Pose6D(
-                float(row["B_tcp_x"]),
-                float(row["B_tcp_y"]),
-                float(row["B_tcp_z"]),
-                float(row["B_tcp_rx"]),
-                float(row["B_tcp_ry"]),
-                float(row["B_tcp_rz"]),
-            )
-            cam_tag = PoseQuat(
-                float(row["C_p_O_x"]),
-                float(row["C_p_O_y"]),
-                float(row["C_p_O_z"]),
-                float(row["C_q_O_x"]),
-                float(row["C_q_O_y"]),
-                float(row["C_q_O_z"]),
-                float(row["C_q_O_w"]),
-            )
+        for index, row in enumerate(reader, start=2):
+            try:
+                base_tcp = Pose6D(
+                    float(row["B_tcp_x"]),
+                    float(row["B_tcp_y"]),
+                    float(row["B_tcp_z"]),
+                    float(row["B_tcp_rx"]),
+                    float(row["B_tcp_ry"]),
+                    float(row["B_tcp_rz"]),
+                )
+                cam_tag = PoseQuat(
+                    float(row["C_p_O_x"]),
+                    float(row["C_p_O_y"]),
+                    float(row["C_p_O_z"]),
+                    float(row["C_q_O_x"]),
+                    float(row["C_q_O_y"]),
+                    float(row["C_q_O_z"]),
+                    float(row["C_q_O_w"]),
+                )
+            except (TypeError, ValueError) as exc:
+                skipped += 1
+                print(f"Skipping invalid row {index}: {exc}")
+                continue
             samples.append((base_tcp, cam_tag))
+    if skipped:
+        print(f"Skipped {skipped} invalid rows while parsing CSV.")
     return samples
 
 
