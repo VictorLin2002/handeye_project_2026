@@ -1,0 +1,274 @@
+object_name: "dodecahedron_tag_rig"
+frame:
+  name: "O"
+  unit: "mm"
+
+flat_points:
+  # Tag id = 0, indices 0..4
+  - index: 0
+    tag_id: 0
+    role: "center"
+    position: [43.7743, -14.2231, -46.9288]
+
+  - index: 1
+    tag_id: 0
+    role: "corner_0"
+    position: [33.2234, -29.1955, -63.5723]
+
+  - index: 2
+    tag_id: 0
+    role: "corner_1"
+    position: [44.039, 4.0915, -63.5723]
+
+  - index: 3
+    tag_id: 0
+    role: "corner_2"
+    position: [54.3252, 0.7493, -30.2853]
+
+  - index: 4
+    tag_id: 0
+    role: "corner_3"
+    position: [43.5096, -32.5377, -30.2853]
+
+
+  # Tag id = 1, indices 5..9
+  - index: 5
+    tag_id: 1
+    role: "center"
+    position: [27.054, 37.23665, -46.9288]
+
+  - index: 6
+    tag_id: 1
+    role: "corner_0"
+    position: [38.0332, 22.5754, -63.5723]
+
+  - index: 7
+    tag_id: 1
+    role: "corner_1"
+    position: [9.7176, 43.1479, -63.5723]
+
+  - index: 8
+    tag_id: 1
+    role: "corner_2"
+    position: [16.0748, 51.8979, -30.2853]
+
+  - index: 9
+    tag_id: 1
+    role: "corner_3"
+    position: [44.3904, 31.3254, -30.2853]
+
+
+  # Tag id = 2, indices 10..14
+  - index: 10
+    tag_id: 2
+    role: "center"
+    position: [-27.054, 37.23665, -46.9288]
+
+  - index: 11
+    tag_id: 2
+    role: "corner_0"
+    position: [-9.7176, 43.1479, -63.5723]
+
+  - index: 12
+    tag_id: 2
+    role: "corner_1"
+    position: [-38.0332, 22.5754, -63.5723]
+
+  - index: 13
+    tag_id: 2
+    role: "corner_2"
+    position: [-44.3904, 31.3254, -30.2853]
+
+  - index: 14
+    tag_id: 2
+    role: "corner_3"
+    position: [-16.0748, 51.8979, -30.2853]
+
+
+  # Tag id = 3, indices 15..19
+  - index: 15
+    tag_id: 3
+    role: "center"
+    position: [-43.7743, -14.2231, -46.9288]
+
+  - index: 16
+    tag_id: 3
+    role: "corner_0"
+    position: [-44.039, 4.0915, -63.5723]
+
+  - index: 17
+    tag_id: 3
+    role: "corner_1"
+    position: [-33.2234, -29.1955, -63.5723]
+
+  - index: 18
+    tag_id: 3
+    role: "corner_2"
+    position: [-43.5096, -32.5377, -30.2853]
+
+  - index: 19
+    tag_id: 3
+    role: "corner_3"
+    position: [-54.3252, 0.7493, -30.2853]
+
+
+  # Tag id = 4, indices 20..24
+  - index: 20
+    tag_id: 4
+    role: "center"
+    position: [0.0, -46.027, -46.9288]
+
+  - index: 21
+    tag_id: 4
+    role: "corner_0"
+    position: [-17.5, -40.6192, -63.5723]
+
+  - index: 22
+    tag_id: 4
+    role: "corner_1"
+    position: [17.5, -40.6192, -63.5723]
+
+  - index: 23
+    tag_id: 4
+    role: "corner_2"
+    position: [17.5, -51.4348, -30.2853]
+
+  - index: 24
+    tag_id: 4
+    role: "corner_3"
+    position: [-17.5, -51.4348, -30.2853]
+
+
+  # Tag id = 5, indices 25..29
+  - index: 25
+    tag_id: 5
+    role: "center"
+    position: [30.7137333333333, -32.3495666666667, 16.4136666666667]
+
+  - index: 26
+    tag_id: 5
+    role: "corner_0"
+    position: [16.0748, -51.8979, -5.7776]
+
+  - index: 27
+    tag_id: 5
+    role: "corner_1"
+    position: [44.3904, -31.3254, -5.7776]
+
+  - index: 28
+    tag_id: 5
+    role: "corner_2"
+    position: [38.0332, -22.5754, 27.5093]
+
+  - index: 29
+    tag_id: 5
+    role: "corner_3"
+    position: [9.7176, -43.1479, 27.5093]
+
+
+  # Tag id = 6, indices 30..34
+  - index: 30
+    tag_id: 6
+    role: "center"
+    position: [40.2573333333333, 19.2139, 16.4136666666667]
+
+  - index: 31
+    tag_id: 6
+    role: "corner_0"
+    position: [54.3252, -0.7493, -5.7776]
+
+  - index: 32
+    tag_id: 6
+    role: "corner_1"
+    position: [43.5096, 32.5377, -5.7776]
+
+  - index: 33
+    tag_id: 6
+    role: "corner_2"
+    position: [33.2234, 29.1955, 27.5093]
+
+  - index: 34
+    tag_id: 6
+    role: "corner_3"
+    position: [44.039, -4.0915, 27.5093]
+
+
+  # Tag id = 7, indices 35..39
+  - index: 35
+    tag_id: 7
+    role: "center"
+    position: [-5.83333333333333, 44.2244, 16.4136666666667]
+
+  - index: 36
+    tag_id: 7
+    role: "corner_0"
+    position: [17.5, 51.4348, -5.7776]
+
+  - index: 37
+    tag_id: 7
+    role: "corner_1"
+    position: [-17.5, 51.4348, -5.7776]
+
+  - index: 38
+    tag_id: 7
+    role: "corner_2"
+    position: [-17.5, 40.6192, 27.5093]
+
+  - index: 39
+    tag_id: 7
+    role: "corner_3"
+    position: [17.5, 40.6192, 27.5093]
+
+
+  # Tag id = 8, indices 40..44
+  - index: 40
+    tag_id: 8
+    role: "center"
+    position: [-43.8625333333333, 8.11823333333333, 16.4136666666667]
+
+  - index: 41
+    tag_id: 8
+    role: "corner_0"
+    position: [-43.5096, 32.5377, -5.7776]
+
+  - index: 42
+    tag_id: 8
+    role: "corner_1"
+    position: [-54.3252, -0.7493, -5.7776]
+
+  - index: 43
+    tag_id: 8
+    role: "corner_2"
+    position: [-44.039, -4.0915, 27.5093]
+
+  - index: 44
+    tag_id: 8
+    role: "corner_3"
+    position: [-33.2234, 29.1955, 27.5093]
+
+
+  # Tag id = 9, indices 45..49
+  - index: 45
+    tag_id: 9
+    role: "center"
+    position: [-21.2752, -39.2070666666667, 16.4136666666667]
+
+  - index: 46
+    tag_id: 9
+    role: "corner_0"
+    position: [-44.3904, -31.3254, -5.7776]
+
+  - index: 47
+    tag_id: 9
+    role: "corner_1"
+    position: [-16.0748, -51.8979, -5.7776]
+
+  - index: 48
+    tag_id: 9
+    role: "corner_2"
+    position: [-9.7176, -43.1479, 27.5093]
+
+  - index: 49
+    tag_id: 9
+    role: "corner_3"
+    position: [-38.0332, -22.5754, 27.5093]

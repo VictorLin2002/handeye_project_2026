@@ -1,0 +1,11 @@
+--- src/handeye_logger/package.xml	2025-12-15 08:34:04.000000000 +0000
++++ src/handeye_logger/package.xml	2025-12-29 12:28:56.691496270 +0000
+@@ -9,6 +9,8 @@
+ 
+   <depend>rclpy</depend>
+   <depend>geometry_msgs</depend>
++  <depend>std_msgs</depend>
++  <depend>std_srvs</depend>
+ 
+   <test_depend>ament_copyright</test_depend>
+   <test_depend>ament_flake8</test_depend>

@@ -1,0 +1,312 @@
+--- src/handeye_logger/handeye_logger/handeye_logger_node.py	2025-12-29 08:26:50.000000000 +0000
++++ src/handeye_logger/handeye_logger/handeye_logger_node.py	2025-12-29 12:27:22.901886617 +0000
+@@ -2,6 +2,7 @@
+ import csv
+ import time
+ import math
++import threading
+ from collections import deque
+ from typing import Deque, Optional, Tuple
+ 
+@@ -9,6 +10,7 @@
+ from rclpy.node import Node
+ from geometry_msgs.msg import PoseWithCovarianceStamped
+ from std_msgs.msg import Int64MultiArray
++from std_srvs.srv import Trigger
+ 
+ from rtde_receive import RTDEReceiveInterface
+ 
+@@ -83,6 +85,18 @@
+         # Status publishing (for external synchronizer)
+         self.declare_parameter("status_topic", "/handeye_logger/status")
+ 
++        # Capture-on-demand (recommended): motion done -> capture_once service -> log exactly one synchronized sample.
++        # When auto_log is False, the logger will NOT log automatically in poll_rtde().
++        self.declare_parameter("auto_log", True)  # legacy behavior: log whenever stationary & stable
++        self.declare_parameter("capture_service", "/handeye_logger/capture_once")
++        self.declare_parameter("capture_timeout_s", 2.0)  # wait for a fresh, stable vision window
++
++        # Time synchronization between vision and TCP is performed in wall-clock domain (time.time()).
++        # - max_sync_dt_s: max allowed |t_tcp - t_vision_recv| for a valid pair.
++        # - max_vision_age_s: reject if vision is older than this at capture time.
++        self.declare_parameter("max_sync_dt_s", 0.03)
++        self.declare_parameter("max_vision_age_s", 0.25)
++
+         self.robot_ip = self.get_parameter("robot_ip").value
+         self.rtde_frequency = int(self.get_parameter("rtde_frequency").value)
+         self.object_pose_topic = self.get_parameter("object_pose_topic").value
+@@ -106,6 +120,12 @@
+ 
+         self.status_topic = self.get_parameter("status_topic").value
+ 
++        self.auto_log = bool(self.get_parameter("auto_log").value)
++        self.capture_service_name = self.get_parameter("capture_service").value
++        self.capture_timeout_s = float(self.get_parameter("capture_timeout_s").value)
++        self.max_sync_dt_s = float(self.get_parameter("max_sync_dt_s").value)
++        self.max_vision_age_s = float(self.get_parameter("max_vision_age_s").value)
++
+         self._start_time = time.time()
+         self._rmse_reject_count = 0
+         self._last_reject_warn_t = 0.0
+@@ -135,13 +155,32 @@
+         self.status_pub = self.create_publisher(Int64MultiArray, self.status_topic, 10)
+         self._last_pub_count = -1
+         self.get_logger().info(f"Publishing status: {self.status_topic} (Int64MultiArray: [count, obj_stamp_us])")
++        self.get_logger().info(f"Auto log: {'ON' if self.auto_log else 'OFF'}")
++        self.get_logger().info(f"Capture service: {self.capture_service_name}")
++        self.get_logger().info(
++            f"Time sync: max_sync_dt_s={self.max_sync_dt_s:.3f}, max_vision_age_s={self.max_vision_age_s:.3f}"
++        )
++
++        if self.auto_log:
++            self.get_logger().info("Auto-log enabled: logger will write automatically when stationary & vision stable.")
++        else:
++            self.get_logger().info(
++                "Auto-log disabled: use capture service to log one sample after motion completes. "
++                f"Service: {self.capture_service_name}"
++            )
+ 
+         # Buffers / latest states
+         self.tcp_hist: Deque[Tuple[float, float, float, float, float, float]] = deque(maxlen=self.stationary_window)
++        # Timestamped TCP samples for nearest-neighbor pairing against vision receive time.
++        # Keep a few seconds of history to cover low-FPS vision and jitter.
++        tcp_time_hist_len = int(max(200, self.rtde_poll_hz * 3.0))
++        self.tcp_time_hist: Deque[Tuple[float, Tuple[float, float, float, float, float, float]]] = deque(maxlen=tcp_time_hist_len)
+         self.latest_tcp: Optional[Tuple[float, float, float, float, float, float]] = None
++        self.latest_tcp_time: Optional[float] = None
+ 
+         self.vision_hist: Deque[PoseWithCovarianceStamped] = deque(maxlen=self.vision_stable_window)
+         self.latest_obj_pose: Optional[PoseWithCovarianceStamped] = None
++        self.latest_obj_recv_time: Optional[float] = None
+ 
+         # Arming state machine
+         self.armed = True
+@@ -153,6 +192,15 @@
+         # Dedupe: avoid logging multiple times for the same vision timestamp (in case upstream repeats stamps)
+         self._last_logged_obj_stamp_us: int = -1
+ 
++        # Capture state (service-driven). The service arms a capture request and blocks until
++        # a fresh, stable vision window arrives (post-request), then logs a synchronized pair.
++        self._capture_lock = threading.Lock()
++        self._capture_armed = False
++        self._capture_req_time: Optional[float] = None
++        self._capture_event = threading.Event()
++        self._capture_pose: Optional[PoseWithCovarianceStamped] = None
++        self._capture_pose_recv_time: Optional[float] = None
++
+         # Subscriptions / timers
+         self.sub = self.create_subscription(
+             PoseWithCovarianceStamped,
+@@ -161,6 +209,10 @@
+             10
+         )
+ 
++        # Service: capture exactly one sample AFTER motion completion.
++        # This is the recommended entry point for scripts (see scripts/handeye/run_calib_poses.sh).
++        self.capture_srv = self.create_service(Trigger, self.capture_service_name, self.capture_once_cb)
++
+         period = 1.0 / max(1.0, self.rtde_poll_hz)
+         self.timer = self.create_timer(period, self.poll_rtde)
+ 
+@@ -184,8 +236,27 @@
+     def vision_cb(self, msg: PoseWithCovarianceStamped):
+         """Store latest vision pose and keep a small window for stability check."""
+         self.latest_obj_pose = msg
++        self.latest_obj_recv_time = time.time()  # Wall-clock receive time (used for cross-stream pairing)
+         self.vision_hist.append(msg)
+ 
++        # If capture is armed, only accept vision that arrives AFTER the capture request.
++        with self._capture_lock:
++            if not self._capture_armed:
++                return
++            if self.latest_obj_recv_time <= self._capture_req_time:
++                return
++
++            # Require a stable window after request, reusing the existing stability gate.
++            # The window is built from messages after capture was armed because we clear vision_hist in capture_once_cb.
++            if len(self.vision_hist) < self.vision_stable_window:
++                return
++            if not self._is_vision_stable():
++                return
++
++            self._capture_pose = self.latest_obj_pose
++            self._capture_pose_recv_time = self.latest_obj_recv_time
++            self._capture_event.set()
++
+     def poll_rtde(self):
+         """Poll RTDE pose, update stationary/motion state, and log exactly once per stationary period."""
+         # Warmup gating to avoid first-pose instability.
+@@ -202,6 +273,7 @@
+ 
+         self.latest_tcp = tcp6
+         self.tcp_hist.append(tcp6)
++        self.tcp_time_hist.append((time.time(), tcp6))
+ 
+         # If we are locked (armed=False), only check whether robot has moved enough to re-arm.
+         if not self.armed:
+@@ -213,13 +285,103 @@
+                 self._publish_status(obj_stamp_sec=0.0)
+             return
+ 
+-        # Armed: ready to log when robot stationary AND vision stable.
+-        if self._is_robot_stationary() and self._is_vision_stable():
+-            if self.latest_obj_pose is None:
+-                return
+-            self._log_once(self.latest_obj_pose, tcp6)
++        # Armed: legacy auto-log path.
++        if self.auto_log:
++            if self._is_robot_stationary() and self._is_vision_stable():
++                if self.latest_obj_pose is None:
++                    return
++                self._log_once(self.latest_obj_pose, tcp6)
+             # _log_once may decide to keep armed (retry) OR lock (success/skip).
+ 
++    def _get_nearest_tcp(self, t_query: float) -> Optional[Tuple[float, Tuple[float, float, float, float, float, float]]]:
++        """Return (t_tcp, tcp6) nearest to t_query from tcp_time_hist (wall-clock domain)."""
++        if len(self.tcp_time_hist) == 0:
++            return None
++        return min(self.tcp_time_hist, key=lambda x: abs(x[0] - t_query))
++
++    def capture_once_cb(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
++        """
++        Capture exactly one synchronized sample on demand.
++
++        Semantics:
++          - Called after motion completes.
++          - Logger waits for a FRESH vision window (arrives after the request).
++          - Pairs that vision with the nearest TCP sample in wall-clock time.
++          - Enforces timing gates to prevent stale-image / mismatched-pose logging.
++        """
++        # Re-arm capture state and clear vision window so we cannot reuse pre-motion messages.
++        with self._capture_lock:
++            self._capture_event.clear()
++            self._capture_pose = None
++            self._capture_pose_recv_time = None
++            self._capture_req_time = time.time()
++            self._capture_armed = True
++
++            self.vision_hist.clear()
++            self.latest_obj_pose = None
++            self.latest_obj_recv_time = None
++
++        # Ensure robot is stationary when capture is requested.
++        # This uses the RTDE history window; if it is not stationary yet, capture is refused.
++        if not self._is_robot_stationary():
++            with self._capture_lock:
++                self._capture_armed = False
++            response.success = False
++            response.message = "Robot is not stationary at capture request time."
++            return response
++
++        # Wait for a stable, post-request vision window.
++        if not self._capture_event.wait(timeout=self.capture_timeout_s):
++            with self._capture_lock:
++                self._capture_armed = False
++            response.success = False
++            response.message = f"Vision timeout: no stable vision window within {self.capture_timeout_s:.2f}s."
++            return response
++
++        # Snapshot capture data.
++        with self._capture_lock:
++            self._capture_armed = False
++            pose_msg = self._capture_pose
++            t_vision = self._capture_pose_recv_time
++
++        if pose_msg is None or t_vision is None:
++            response.success = False
++            response.message = "Internal capture error: missing pose or timestamp."
++            return response
++
++        # Reject stale vision relative to current time (protects against delayed callbacks).
++        if (time.time() - t_vision) > self.max_vision_age_s:
++            response.success = False
++            response.message = (
++                f"Vision too old: age={(time.time() - t_vision):.3f}s exceeds max_vision_age_s={self.max_vision_age_s:.3f}s."
++            )
++            return response
++
++        nearest = self._get_nearest_tcp(t_vision)
++        if nearest is None:
++            response.success = False
++            response.message = "No TCP samples available for synchronization."
++            return response
++
++        t_tcp, tcp_sync = nearest
++        dt = abs(t_tcp - t_vision)
++        if dt > self.max_sync_dt_s:
++            response.success = False
++            response.message = f"Sync dt too large: {dt:.3f}s > max_sync_dt_s={self.max_sync_dt_s:.3f}s."
++            return response
++
++        # Log using the synchronized TCP pose.
++        # Use the TCP sample time as host_stamp to keep time semantics consistent in CSV.
++        ok = self._log_once(pose_msg, tcp_sync, host_stamp_override=t_tcp)
++        if not ok:
++            response.success = False
++            response.message = "Sample rejected by RMSE filter or dedupe."
++            return response
++
++        response.success = True
++        response.message = "Captured and logged one sample."
++        return response
++
+     def _is_robot_stationary(self) -> bool:
+         """
+         Robot stationary if TCP variation within the window is below thresholds.
+@@ -295,7 +457,12 @@
+ 
+         return True
+ 
+-    def _log_once(self, msg: PoseWithCovarianceStamped, tcp6: Tuple[float, float, float, float, float, float]):
++    def _log_once(
++        self,
++        msg: PoseWithCovarianceStamped,
++        tcp6: Tuple[float, float, float, float, float, float],
++        host_stamp_override: Optional[float] = None,
++    ) -> bool:
+         """
+         Write one paired sample to CSV and freeze reference for re-arming.
+ 
+@@ -314,7 +481,7 @@
+ 
+         # Dedupe: if upstream republishes the same stamp, do not log again.
+         if obj_stamp_us == self._last_logged_obj_stamp_us:
+-            return
++            return False
+ 
+         if rmse > self.max_rmse_m:
+             self._rmse_reject_count += 1
+@@ -339,9 +506,9 @@
+                 self._publish_status(obj_stamp_sec=0.0)
+ 
+             # Keep armed=True for retry unless we just locked above.
+-            return
++            return False
+ 
+-        host_stamp = time.time()
++        host_stamp = float(host_stamp_override) if host_stamp_override is not None else time.time()
+ 
+         p = msg.pose.pose.position
+         q = msg.pose.pose.orientation
+@@ -371,6 +538,8 @@
+         # Publish status so external scripts can wait for count increment
+         self._publish_status(obj_stamp_sec=obj_stamp)
+ 
++        return True
++
+     def destroy_node(self):
+         try:
+             self.rtde_r.disconnect()
+@@ -387,7 +556,11 @@
+     rclpy.init(args=args)
+     node = HandEyeLogger()
+     try:
+-        rclpy.spin(node)
++        # Use a MultiThreadedExecutor so the capture service can block waiting for
++        # post-request vision frames while subscriptions keep being processed.
++        executor = rclpy.executors.MultiThreadedExecutor(num_threads=2)
++        executor.add_node(node)
++        executor.spin()
+     finally:
+         node.destroy_node()
+         rclpy.shutdown()

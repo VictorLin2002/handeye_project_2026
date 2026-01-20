@@ -1,0 +1,104 @@
+--- scripts/handeye/run_calib_poses.sh	2025-12-29 10:18:03.000000000 +0000
++++ scripts/handeye/run_calib_poses.sh	2025-12-29 12:28:35.223692375 +0000
+@@ -3,7 +3,8 @@
+ # Strong synchronization:
+ #   1) Send goal
+ #   2) Wait action done
+-#   3) Wait logger status count increments (or timeout)
++#   3) After motion settle, trigger ONE capture via /handeye_logger/capture_once
++#   4) Wait logger status count increments (and stamp updates) or timeout
+ set -euo pipefail
+ 
+ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+@@ -15,6 +16,7 @@
+ 
+ # Logger status topic (publish from HandEyeLogger)
+ LOGGER_STATUS_TOPIC="${LOGGER_STATUS_TOPIC:-/handeye_logger/status}"
++CAPTURE_SERVICE_NAME="${CAPTURE_SERVICE_NAME:-/handeye_logger/capture_once}"
+ 
+ # Per pose waits
+ POSE_TIMEOUT_S="${POSE_TIMEOUT_S:-30}"          # action completion timeout (soft; ros2 action already blocks)
+@@ -32,37 +34,47 @@
+ echo "Running calibration poses from: ${CSV_PATH}"
+ echo "Speed: ${SPEED} m/s, Acc: ${ACC} m/s^2"
+ echo "Logger status topic: ${LOGGER_STATUS_TOPIC}"
++echo "Capture service: ${CAPTURE_SERVICE_NAME}"
+ echo ""
+ 
+-# Read current logged_count (best-effort). If topic not available, fallback to -1.
+-get_logged_count() {
++get_status() {
+   # Expect message like: "data: [12, 1766995600396469]"
+-  # We parse first integer in the bracket.
+-  if ! timeout 1.0 ros2 topic echo -n 1 "${LOGGER_STATUS_TOPIC}" 2>/dev/null | grep -q "data:"; then
+-    echo "-1"
++  # Output: "<count> <obj_stamp_us>" or "-1 -1" if unavailable.
++  local line
++  line="$(timeout 1.0 ros2 topic echo -n 1 "${LOGGER_STATUS_TOPIC}" 2>/dev/null || true)"
++  if ! echo "${line}" | grep -q "data:"; then
++    echo "-1 -1"
+     return 0
+   fi
+-  timeout 1.0 ros2 topic echo -n 1 "${LOGGER_STATUS_TOPIC}" 2>/dev/null \
+-    | sed -n 's/.*data: \[\([0-9]\+\).*/\1/p' | head -n 1 | awk '{print $1}'
++  local count stamp
++  count="$(echo "${line}" | sed -n 's/.*data: \[\([0-9]\+\),.*/\1/p' | head -n 1)"
++  stamp="$(echo "${line}" | sed -n 's/.*data: \[[0-9]\+, \([0-9]\+\)\].*/\1/p' | head -n 1)"
++  if [ -z "${count}" ] || [ -z "${stamp}" ]; then
++    echo "-1 -1"
++    return 0
++  fi
++  echo "${count} ${stamp}"
+ }
+ 
+ wait_logger_increment() {
+-  local before="$1"
++  local before_count="$1"
++  local before_stamp="$2"
+   local t0
+   t0="$(date +%s)"
+ 
+   # If logger status not available, signal failure so caller can decide fallback/skip.
+-  if [ "${before}" = "-1" ]; then
++  if [ "${before_count}" = "-1" ]; then
+     return 2
+   fi
+ 
+   while true; do
+-    local now_count
+-    now_count="$(get_logged_count)"
++    local now_count now_stamp
++    read -r now_count now_stamp < <(get_status)
+     if [ "${now_count}" = "-1" ]; then
+       return 2
+     fi
+-    if [ "${now_count}" -gt "${before}" ]; then
++    # Require count increment AND stamp update (avoids false positives from stale status replay).
++    if [ "${now_count}" -gt "${before_count}" ] && [ "${now_stamp}" != "${before_stamp}" ] && [ "${now_stamp}" -gt 0 ]; then
+       return 0
+     fi
+ 
+@@ -79,7 +91,7 @@
+ while IFS=',' read -r x y z rx ry rz; do
+   echo "Moving to: x=${x}, y=${y}, z=${z}, rx=${rx}, ry=${ry}, rz=${rz}"
+ 
+-  before_count="$(get_logged_count)"
++  read -r before_count before_stamp < <(get_status)
+ 
+   if ! ros2 action send_goal /move_to_pose rtde_controller_interfaces/action/MoveToPose \
+     "{x: ${x}, y: ${y}, z: ${z}, rx: ${rx}, ry: ${ry}, rz: ${rz}, speed: ${SPEED}, acc: ${ACC}}" \
+@@ -99,7 +111,13 @@
+ 
+   sleep "${SETTLE_S}"
+ 
+-  if wait_logger_increment "${before_count}"; then
++  # Trigger capture after motion settles. This ensures the logged vision frame is post-motion.
++  # The service returns success/failure with a short message.
++  if ! timeout "${LOG_WAIT_TIMEOUT_S}" ros2 service call "${CAPTURE_SERVICE_NAME}" std_srvs/srv/Trigger "{}" >/dev/null 2>&1; then
++    echo "WARN: capture service call failed or timed out." >&2
++  fi
++
++  if wait_logger_increment "${before_count}" "${before_stamp}"; then
+     echo "Logged OK (count increased)."
+   else
+     rc="$?"

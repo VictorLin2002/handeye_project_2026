@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>kinect</name>
+  <version>0.0.1</version>
+  <description>Azure Kinect ROS 2 nodes and utilities.</description>
+
+  <maintainer email="victor@example.com">Victor</maintainer>
+  <license>Apache-2.0</license>
+
+  <!-- Build tool -->
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- ROS 2 dependencies -->
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>image_transport</depend>
+  <depend>cv_bridge</depend>
+  <depend>ament_index_cpp</depend>
+  <depend>geometry_msgs</depend>
+
+  <!-- Non-ROS system dependencies:
+       Keep these as exec/build depends only if you use rosdep.
+       If you do not use rosdep, they are harmless but may be unresolved on other machines. -->
+  <build_depend>eigen</build_depend>
+  <exec_depend>eigen</exec_depend>
+
+  <build_depend>opencv</build_depend>
+  <exec_depend>opencv</exec_depend>
+
+  <build_depend>yaml-cpp</build_depend>
+  <exec_depend>yaml-cpp</exec_depend>
+
+  <!-- Azure Kinect SDK: if you have a rosdep key, put it here; otherwise omit -->
+  <!-- <build_depend>k4a</build_depend>
+  <exec_depend>k4a</exec_depend> -->
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

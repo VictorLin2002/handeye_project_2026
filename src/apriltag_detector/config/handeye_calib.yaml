@@ -1,0 +1,41 @@
+# Hand-Eye Calibration Configuration
+# Optimized for collecting calibration data with fast object movement
+
+tag_localizer_node:
+  ros__parameters:
+    # ========== Topic Names ==========
+    raw_calib_topic: "kinect/raw_calibration"
+    color_topic: "color/image_raw"
+    depth_topic: "depth/aligned_depth_to_color"
+    object_pose_topic: "apriltag/object_pose"
+    camera_frame_id: "camera_color_optical_frame"
+
+    # ========== AprilTag Detection ==========
+    quad_decimate: 1.0      # Full resolution for accuracy
+    quad_sigma: 0.25
+    nthreads: 5
+    refine_edges: true      # Critical for calibration accuracy
+
+    # ========== Depth Validation ==========
+    depth_min_mm: 200
+    depth_max_mm: 2000
+
+    # ========== Depth Sampling ==========
+    depth_window_radius: 3
+    depth_min_valid_count: 10
+    depth_outlier_thresh_mm: 0
+
+    # ========== CAD Mapping ==========
+    cad_yaml_path: "config/tag_cad_points.yaml"
+
+    # ========== Pose Filtering ==========
+    # IMPORTANT: Disable jump detection for hand-eye calibration!
+    enable_pose_filtering: true
+    max_rmse_threshold_mm: 100.0    # Relaxed threshold
+
+    enable_jump_detection: true    # MUST be false for manual movement
+    max_position_jump_m: 1.0        # Not used when jump detection disabled
+    max_rotation_jump_deg: 180.0    # Not used when jump detection disabled
+
+    pose_history_size: 5
+    smoothing_alpha: 1.0            # No smoothing for raw measurements
