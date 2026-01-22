@@ -4,7 +4,7 @@ Analyze hand-eye calibration matrix T_BC for sanity checks.
 """
 import numpy as np
 
-# Current calibration matrix from verify_tag4_simple.py
+# Current calibration matrix from handeye_verify/verify_tag4_simple.py
 T_BC = np.array([
     [0.9999959482, -0.0023791513, 0.0015630798, 0.2631138547],
     [-0.0026510444, -0.5782833118, 0.8158317126, -1.2358888690],

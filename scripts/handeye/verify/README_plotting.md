@@ -4,7 +4,7 @@
 
 ## 功能特點
 
-### 1. 數據收集 (`verify_tag4_simple.py`)
+### 1. 數據收集（ROS 2 節點 `handeye_verify/verify_tag4_simple.py`）
 - 自動保存樣本數據到CSV檔案
 - 記錄每個樣本的XYZ位置和時間戳一致性
 
@@ -29,7 +29,7 @@
 
 ```bash
 # 運行測試，保存50個樣本到CSV
-ros2 run <your_package> verify_tag4_simple.py \
+ros2 run handeye_verify verify_handeye_touch \
   --ros-args \
   -p test_mode:=repeatability \
   -p num_samples:=50 \
@@ -179,7 +179,7 @@ python3 plot_repeatability_errors.py --csv calibration2.csv --output cal2.png
 
 for i in {1..5}; do
   echo "=== Test $i ==="
-  ros2 run pkg verify_tag4_simple.py \
+  ros2 run handeye_verify verify_handeye_touch \
     --ros-args -p save_samples_csv:=/tmp/test_$i.csv
 
   python3 plot_repeatability_errors.py \
@@ -193,14 +193,13 @@ done
 
 ```
 scripts/handeye/verify/
-├── verify_tag4_simple.py       # 重複性測試主程式
 ├── plot_repeatability_errors.py # 視覺化工具
-└── README_plotting.md          # 本說明文件
+└── README_plotting.md           # 本說明文件
 ```
 
 ## 參數說明
 
-### verify_tag4_simple.py 參數
+### ROS 2 節點參數（verify_handeye_touch）
 - `test_mode`: "repeatability" 或 "touch"
 - `num_samples`: 樣本數量（建議50-100）
 - `sample_interval_sec`: 樣本間隔（秒）

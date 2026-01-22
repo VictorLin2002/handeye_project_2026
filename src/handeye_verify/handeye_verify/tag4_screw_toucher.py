@@ -12,7 +12,7 @@ Key fix for repeatability:
 
 import time
 import os
-import sys
+import importlib.util
 from datetime import datetime
 from typing import Tuple, Optional, List, Dict
 
@@ -25,15 +25,16 @@ from rclpy.action import ActionClient
 from geometry_msgs.msg import PointStamped
 from rtde_controller_interfaces.action import MoveToPose
 
-# Conditional import for plotting functionality
-try:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    sys.path.insert(0, script_dir)
-    from plot_repeatability_errors import create_visualization, create_simple_plot, compute_statistics
+PLOTTING_AVAILABLE = False
+PLOTTING_IMPORT_ERROR = "matplotlib not available"
+
+if importlib.util.find_spec("matplotlib") is not None:
+    from handeye_verify import plot_repeatability_errors
+
+    create_visualization = plot_repeatability_errors.create_visualization
+    create_simple_plot = plot_repeatability_errors.create_simple_plot
+    compute_statistics = plot_repeatability_errors.compute_statistics
     PLOTTING_AVAILABLE = True
-except ImportError as e:
-    PLOTTING_AVAILABLE = False
-    PLOTTING_IMPORT_ERROR = str(e)
 
 
 def normalize(v: np.ndarray, eps: float = 1e-12) -> Optional[np.ndarray]:
@@ -146,18 +147,13 @@ class Tag4ScrewToucher(Node):
         super().__init__("tag4_screw_toucher")
 
         # -----------------------------
-        # Parameters: Mode selection
-        # -----------------------------
-        self.declare_parameter("test_mode", "repeatability")  # "touch" or "repeatability"
-
-        # -----------------------------
         # Parameters: Repeatability test
         # -----------------------------
         self.declare_parameter("num_samples", 200)
         self.declare_parameter("sample_interval_sec", 0.05)          # spacing between samples
         self.declare_parameter("sample_timeout_sec", 1.0)           # time to wait for 4 corners per sample
         self.declare_parameter("stamp_coherence_ms", 5.0)           # max stamp spread among 4 corners
-        self.declare_parameter("reference_point_mm", [150.0, -675.0, 83.5])
+        self.declare_parameter("reference_point_mm", [0.0, -675.0, 83.5])
         self.declare_parameter("save_samples_csv", "")              # optional: save samples to CSV
 
         # Plotting parameters
@@ -224,6 +220,8 @@ class Tag4ScrewToucher(Node):
         self.declare_parameter("z_max", 2.00)
         self.declare_parameter("speed", 0.10)
         self.declare_parameter("acc", 0.30)
+        if not self.has_parameter("log_pose_detail"):
+            self.declare_parameter("log_pose_detail", False)
 
         # -----------------------------
         # Load Transformations
@@ -299,7 +297,6 @@ class Tag4ScrewToucher(Node):
         self.get_logger().info("=" * 70)
         self.get_logger().info("Tag4 Screw Toucher / Repeatability")
         self.get_logger().info("=" * 70)
-        self.get_logger().info(f"Mode: {str(self.get_parameter('test_mode').value)}")
         self.get_logger().info("T_BC (Base->Camera):")
         for row in self.T_BC:
             self.get_logger().info(f"  [{row[0]:+.6f}, {row[1]:+.6f}, {row[2]:+.6f}, {row[3]:+.6f}]")
@@ -463,10 +460,13 @@ class Tag4ScrewToucher(Node):
         goal.speed = float(speed)
         goal.acc = float(acc)
 
-        self.get_logger().info(
-            f"[{label}] pose6: x={pose6[0]:+.6f}, y={pose6[1]:+.6f}, z={pose6[2]:+.6f}, "
-            f"rx={pose6[3]:+.4f}, ry={pose6[4]:+.4f}, rz={pose6[5]:+.4f}"
-        )
+        if bool(self.get_parameter("log_pose_detail").value):
+            self.get_logger().info(
+                f"[{label}] pose6: x={pose6[0]:+.6f}, y={pose6[1]:+.6f}, z={pose6[2]:+.6f}, "
+                f"rx={pose6[3]:+.4f}, ry={pose6[4]:+.4f}, rz={pose6[5]:+.4f}"
+            )
+        else:
+            self.get_logger().info(f"[{label}] sending motion command")
 
         if not self.action_client.wait_for_server(timeout_sec=5.0):
             self.get_logger().error("Action server not available.")
@@ -742,37 +742,3 @@ class Tag4ScrewToucher(Node):
                     self.get_logger().error(f"Failed to generate plots: {e}")
 
         return True
-
-
-def main():
-    rclpy.init()
-    node = Tag4ScrewToucher()
-    try:
-        node.get_logger().info("Starting (Ctrl+C to exit).")
-        while rclpy.ok():
-            mode = str(node.get_parameter("test_mode").value).strip().lower()
-
-            if mode == "repeatability":
-                node.get_logger().info("Running repeatability test...")
-                ok = node.run_repeatability()
-            else:
-                node.get_logger().info("Running touch sequence...")
-                ok = node.run_once_touch()
-
-            if ok:
-                node.get_logger().info("Finished successfully.")
-            else:
-                node.get_logger().info("Failed or aborted.")
-
-            # Avoid busy-loop; also gives time for topics to settle
-            time.sleep(0.2)
-
-    except KeyboardInterrupt:
-        node.get_logger().info("Interrupted by user.")
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
-
-
-if __name__ == "__main__":
-    main()

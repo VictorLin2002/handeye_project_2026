@@ -26,7 +26,7 @@ AX = ZB
 
 #### 當前驗證程式的使用方式：
 ```python
-# verify_tag4_simple.py 第 248 行
+# src/handeye_verify/handeye_verify/verify_tag4_simple.py
 pB = (self.T_BC @ pC_h)[:3]  # 用 T_BC 將相機座標轉到基座座標
 ```
 
