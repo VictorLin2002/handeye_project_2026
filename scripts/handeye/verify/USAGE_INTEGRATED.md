@@ -44,6 +44,13 @@ ros2 run handeye_verify verify_handeye_touch \
 | `reference_point_mm` | `[0.0, -650.0, 83.5]` | 參考點（mm） |
 | `save_samples_csv` | `""` | 自定義CSV路徑（空=自動生成） |
 
+### Touch模式參數
+
+| 參數 | 預設值 | 說明 |
+|------|--------|------|
+| `repeat_touch` | `false` | 是否在touch流程結束後自動重複 |
+| `repeat_interval_sec` | `0.5` | 每次touch流程之間的等待秒數 |
+
 ## 📖 使用範例
 
 ### 範例1：預設配置（最常用）
@@ -121,6 +128,17 @@ ros2 run handeye_verify verify_handeye_touch \
   -p num_samples:=50 \
   -p reference_point_mm:="[0.0, -650.0, 85.0]"
 ```
+
+### 範例8：Touch模式持續循環
+```bash
+ros2 run handeye_verify verify_handeye_touch \
+  --ros-args \
+  -p test_mode:=touch \
+  -p repeat_touch:=true \
+  -p repeat_interval_sec:=1.0
+```
+
+**結果**：每次touch流程結束後等待1秒，然後自動重複直到手動停止。
 
 ## 📊 輸出文件
 
