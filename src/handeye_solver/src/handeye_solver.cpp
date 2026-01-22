@@ -628,6 +628,15 @@ int main(int argc, char** argv)
 
     Solver::reportResiduals(samples, R_BC, t_BC, Y, "BEFORE LM (Z 6DoF)");
 
+    // Print TBC in requested format before refinement: x y z qx qy qz qw
+    {
+        const Eigen::Quaterniond q_before(R_BC);
+        std::cout << "\n[TBC BEFORE LM] (x y z qx qy qz qw)\n";
+        std::cout << std::fixed << std::setprecision(6)
+                  << t_BC.x() << " " << t_BC.y() << " " << t_BC.z() << " "
+                  << q_before.x() << " " << q_before.y() << " " << q_before.z() << " " << q_before.w() << "\n";
+    }
+
     // 5) Refine Z in 6DoF with LM (R_BC and t_BC)
     std::cout << "\n[LM] Refining Z in SE(3) (6DoF)...\n";
     if (!Solver::refineZWithLM_6DoF(samples, Y, R_BC, t_BC, lm_maxfev, lm_trans_scale, lm_rot_scale)) {
@@ -635,6 +644,15 @@ int main(int argc, char** argv)
     }
 
     Solver::reportResiduals(samples, R_BC, t_BC, Y, "AFTER LM (Z 6DoF)");
+
+    // Print TBC in requested format after refinement: x y z qx qy qz qw
+    {
+        const Eigen::Quaterniond q_after(R_BC);
+        std::cout << "\n[TBC AFTER LM] (x y z qx qy qz qw)\n";
+        std::cout << std::fixed << std::setprecision(6)
+                  << t_BC.x() << " " << t_BC.y() << " " << t_BC.z() << " "
+                  << q_after.x() << " " << q_after.y() << " " << q_after.z() << " " << q_after.w() << "\n";
+    }
 
     // 6) Output final T_BC
     const Eigen::Quaterniond q_final(R_BC);

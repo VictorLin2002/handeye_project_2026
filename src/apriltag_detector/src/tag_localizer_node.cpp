@@ -1,6 +1,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <std_msgs/msg/u_int8_multi_array.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 
 #include <cv_bridge/cv_bridge.hpp>
@@ -35,6 +36,7 @@
 #include <numeric>
 #include <optional>
 #include <algorithm>
+#include <tuple>
 #include <stdexcept>
 
 class TagLocalizerNode : public rclcpp::Node
@@ -48,6 +50,9 @@ public:
     this->declare_parameter<std::string>("depth_topic", "depth/aligned_depth_to_color");
 
     this->declare_parameter<std::string>("object_pose_topic", "apriltag/object_pose");
+    this->declare_parameter<std::string>("object_pose_pnp_topic", "apriltag/object_pose_pnp");
+    this->declare_parameter<std::string>("object_pose_svd_topic", "apriltag/object_pose_svd");
+    this->declare_parameter<std::string>("object_pose_compare_topic", "apriltag/object_pose_compare");
     this->declare_parameter<std::string>("camera_frame_id", "camera_color_optical_frame");
 
     // AprilTag detection parameters
@@ -81,6 +86,9 @@ public:
     // ---------- NEW: Center-depth translation refinement ----------
     this->declare_parameter<bool>("use_depth_center_translation", true);
 
+    // ---------- NEW: Live benchmark toggle (PnP vs SVD) ----------
+    this->declare_parameter<bool>("benchmark_pnp_vs_svd", false);
+
     // EMA for center 3D point in camera frame (time-domain filtering)
     // alpha close to 1.0 -> less smoothing; close to 0.0 -> more smoothing
     this->declare_parameter<double>("ema_alpha_center", 0.25);
@@ -90,6 +98,10 @@ public:
 
     // Warmup frames: accept measurement directly for first N updates per tag
     this->declare_parameter<int>("center_filter_warmup", 5);
+
+    // Rotation smoothing parameters
+    this->declare_parameter<double>("ema_alpha_rot", 0.35);
+    this->declare_parameter<int>("rotation_filter_warmup", 5);
 
     // Optional sanity gate: if depth-based translation differs too much from PnP translation, fallback to PnP
     this->declare_parameter<double>("depth_vs_pnp_gate_mm", 30.0);
@@ -129,6 +141,17 @@ public:
     // ---------- Publishers ----------
     pub_object_pose_ = this->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
         this->get_parameter("object_pose_topic").as_string(), 10);
+
+    // NEW: Separate PnP and SVD pose publishers
+    pub_object_pose_pnp_ = this->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
+        this->get_parameter("object_pose_pnp_topic").as_string(), 10);
+
+    pub_object_pose_svd_ = this->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
+        this->get_parameter("object_pose_svd_topic").as_string(), 10);
+
+    // NEW: Comparison/diagnostics publisher
+    pub_object_pose_compare_ = this->create_publisher<std_msgs::msg::Float64MultiArray>(
+        this->get_parameter("object_pose_compare_topic").as_string(), 10);
 
     pub_marked_ = image_transport::create_publisher(this, "apriltag/image_marked");
 
@@ -348,6 +371,18 @@ private:
     double depth_variance_mm;  // actually std-dev in mm
   };
 
+  struct EMA3D {
+    bool initialized = false;
+    Eigen::Vector3d y = Eigen::Vector3d::Zero();
+    int count = 0;
+  };
+
+  struct EMAR {
+    bool initialized = false;
+    Eigen::Matrix3d R = Eigen::Matrix3d::Identity();
+    int count = 0;
+  };
+
   std::optional<Point3DQuality> get3DPoint(const cv::Mat &depth_img,
                                            float u, float v,
                                            int min_mm, int max_mm,
@@ -463,29 +498,12 @@ private:
     return result;
   }
 
-  // -------------------------
-  // NEW: EMA filter for center 3D point in camera frame (per tag id)
-  // -------------------------
-  struct EMA3D {
-    bool initialized = false;
-    Eigen::Vector3d y = Eigen::Vector3d::Zero();
-    int count = 0;
-  };
-
-  // -------------------------
-  // NEW: EMA filter for rotation matrix (per tag id)
-  // -------------------------
-  struct EMAR {
-    bool initialized = false;
-    Eigen::Matrix3d R = Eigen::Matrix3d::Identity();
-    int count = 0;
-  };
-
-  // Smooth rotation matrix using EMA on rotation vector (log map)
-  Eigen::Matrix3d getFilteredRotation(int tag_id, const Eigen::Matrix3d& R_meas)
+  Eigen::Matrix3d getFilteredRotation(
+      int tag_id,
+      const Eigen::Matrix3d& R_meas)
   {
-    const double alpha_rot = std::clamp(this->get_parameter("ema_alpha_center").as_double(), 0.0, 1.0);
-    const int warmup = static_cast<int>(std::max<int64_t>(0, this->get_parameter("center_filter_warmup").as_int()));
+    const double alpha_rot = std::clamp(this->get_parameter("ema_alpha_rot").as_double(), 0.0, 1.0);
+    const int warmup = static_cast<int>(std::max<int64_t>(0, this->get_parameter("rotation_filter_warmup").as_int()));
 
     EMAR& ema = rotation_ema_by_tag_[tag_id];
 
@@ -496,7 +514,6 @@ private:
       return ema.R;
     }
 
-    // Warmup: follow measurements directly
     if (ema.count < warmup) {
       ema.R = R_meas;
       ema.count++;
@@ -586,6 +603,7 @@ private:
 
   // -------------------------
   // Process synced color + aligned depth: AprilTag detection + Pose estimation
+  // NEW: Multi-Tag Global PnP (2D→3D) + Multi-Tag SVD (3D→3D) computed simultaneously
   // -------------------------
   void processImages(const sensor_msgs::msg::Image::ConstSharedPtr &color_msg,
                      const sensor_msgs::msg::Image::ConstSharedPtr &depth_msg,
@@ -644,6 +662,21 @@ private:
       return;
     }
 
+    // Camera matrix and distortion from calibration
+    cv::Mat camera_matrix_pnp;
+    cv::Mat dist_coeffs_pnp;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      camera_matrix_pnp = (cv::Mat_<double>(3, 3) <<
+          camera_fx_, 0, camera_cx_,
+          0, camera_fy_, camera_cy_,
+          0, 0, 1);
+
+      dist_coeffs_pnp = (cv::Mat_<double>(8, 1) <<
+          dist_k1_, dist_k2_, dist_p1_, dist_p2_,
+          dist_k3_, dist_k4_, dist_k5_, dist_k6_);
+    }
+
     static constexpr std::array<int, 10> kOrder{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
     static constexpr int kPointsPerTag = 5;  // center + 4 corners
 
@@ -654,23 +687,26 @@ private:
       lookup[det.id] = &det;
     }
 
-    // Per-tag estimation: PnP (R, t) + optional depth center translation refinement
-    struct TagResult {
-      int tagId;
-      Eigen::Matrix3d R;
-      Eigen::Vector3d t;
-      double reprojection_error_px;
-      double center_depth_std_mm;
-      bool used_depth_center;
-    };
+    // ============================================================
+    // COLLECT ALL POINTS FROM ALL VALID TAGS FOR GLOBAL ESTIMATION
+    // ============================================================
 
-    std::vector<TagResult> tag_results;
+    // Global point collections for Multi-Tag Global PnP
+    std::vector<cv::Point2f> global_image_points;
+    std::vector<cv::Point3f> global_object_points;
+
+    // Global point collections for Multi-Tag SVD (3D→3D)
+    std::vector<Eigen::Vector3d> global_pts_O;  // Object frame (CAD)
+    std::vector<Eigen::Vector3d> global_pts_C;  // Camera frame (from depth)
+    std::vector<double> global_depth_stds;      // Depth std for quality assessment
+
     int valid_tag_count = 0;
+    std::vector<int> used_tag_ids;
 
     for (size_t idx = 0; idx < kOrder.size(); ++idx)
     {
       const int tagId = kOrder[idx];
-      const size_t base_index = idx * kPointsPerTag;
+      const size_t base_index = static_cast<size_t>(tagId) * kPointsPerTag;
 
       auto it = lookup.find(tagId);
       if (it == lookup.end()) continue;
@@ -682,144 +718,73 @@ private:
         continue;
       }
 
+      // Check CAD points availability
+      if (base_index + 4 >= cad_points_object_.size())
+      {
+        continue;
+      }
+
       valid_tag_count++;
+      used_tag_ids.push_back(tagId);
 
-      // Collect points for PnP: center + 4 corners (still used for rotation stability)
-      std::vector<cv::Point2f> image_points;
-      std::vector<cv::Point3f> object_points;
-
-      // Center point
-      if (base_index < cad_points_object_.size())
-      {
-        image_points.push_back(cv::Point2f(det.center.x, det.center.y));
-        const auto &pt3d = cad_points_object_[base_index];
-        object_points.push_back(cv::Point3f(pt3d.x() * 1000.0, pt3d.y() * 1000.0, pt3d.z() * 1000.0));  // mm
+      // ---- DEBUG: Log point mapping ----
+      RCLCPP_INFO(get_logger(), "=== TAG %d (margin=%.1f) ===", tagId, det.decisionMargin);
+      RCLCPP_INFO(get_logger(), "  Center: det(%.1f, %.1f) -> CAD(%.2f, %.2f, %.2f) mm",
+                  det.center.x, det.center.y,
+                  cad_points_object_[base_index].x() * 1000.0,
+                  cad_points_object_[base_index].y() * 1000.0,
+                  cad_points_object_[base_index].z() * 1000.0);
+      for (int dbg_i = 0; dbg_i < 4; ++dbg_i) {
+          const size_t dbg_idx = base_index + static_cast<size_t>(dbg_i + 1);
+          RCLCPP_INFO(get_logger(), "  Corner[%d]: det(%.1f, %.1f) -> CAD(%.2f, %.2f, %.2f) mm",
+                      dbg_i, det.corners[dbg_i].x, det.corners[dbg_i].y,
+                      cad_points_object_[dbg_idx].x() * 1000.0,
+                      cad_points_object_[dbg_idx].y() * 1000.0,
+                      cad_points_object_[dbg_idx].z() * 1000.0);
       }
 
-      // Four corners
-      for (int i = 0; i < 4; ++i)
+      // ---- Add center point ----
       {
-        size_t idx_obj = base_index + static_cast<size_t>(i + 1);
-        if (idx_obj >= cad_points_object_.size()) break;
+        global_image_points.emplace_back(det.center.x, det.center.y);
+        const auto& pt3d = cad_points_object_[base_index];
+        global_object_points.emplace_back(
+            static_cast<float>(pt3d.x() * 1000.0),
+            static_cast<float>(pt3d.y() * 1000.0),
+            static_cast<float>(pt3d.z() * 1000.0));
 
-        image_points.push_back(cv::Point2f(det.corners[i].x, det.corners[i].y));
-        const auto &pt3d = cad_points_object_[idx_obj];
-        object_points.push_back(cv::Point3f(pt3d.x() * 1000.0, pt3d.y() * 1000.0, pt3d.z() * 1000.0));  // mm
-      }
-
-      if (object_points.size() < 4)
-      {
-        continue;
-      }
-
-      // Camera matrix and distortion from calibration
-      cv::Mat camera_matrix_pnp;
-      cv::Mat dist_coeffs_pnp;
-      {
-        std::lock_guard<std::mutex> lock(mutex_);
-        camera_matrix_pnp = (cv::Mat_<double>(3, 3) <<
-            camera_fx_, 0, camera_cx_,
-            0, camera_fy_, camera_cy_,
-            0, 0, 1);
-
-        dist_coeffs_pnp = (cv::Mat_<double>(8, 1) <<
-            dist_k1_, dist_k2_, dist_p1_, dist_p2_,
-            dist_k3_, dist_k4_, dist_k5_, dist_k6_);
-      }
-
-      cv::Mat rvec, tvec;
-      std::vector<int> inliers;
-      bool pnp_success = cv::solvePnPRansac(
-          object_points, image_points, camera_matrix_pnp, dist_coeffs_pnp,
-          rvec, tvec, false, 100, 4.0, 0.99, inliers);
-
-      if (!pnp_success || inliers.size() < 4)
-      {
-        continue;
-      }
-
-      // Convert rvec to rotation matrix (raw PnP measurement)
-      cv::Mat R_cv;
-      cv::Rodrigues(rvec, R_cv);
-      Eigen::Matrix3d R_pnp_raw;
-      R_pnp_raw << R_cv.at<double>(0, 0), R_cv.at<double>(0, 1), R_cv.at<double>(0, 2),
-                   R_cv.at<double>(1, 0), R_cv.at<double>(1, 1), R_cv.at<double>(1, 2),
-                   R_cv.at<double>(2, 0), R_cv.at<double>(2, 1), R_cv.at<double>(2, 2);
-
-      // ---------- NEW: Smooth rotation matrix using EMA ----------
-      Eigen::Matrix3d R_pnp = getFilteredRotation(tagId, R_pnp_raw);
-
-      Eigen::Vector3d t_pnp(tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2));
-      t_pnp *= 0.001;  // mm -> m
-
-      // Reprojection error (pixels) - still computed from raw PnP for quality assessment
-      std::vector<cv::Point2f> reprojected;
-      cv::projectPoints(object_points, rvec, tvec,
-                        camera_matrix_pnp, dist_coeffs_pnp, reprojected);
-
-      double reprojection_error = 0.0;
-      for (size_t i = 0; i < image_points.size(); ++i)
-      {
-        double dx = image_points[i].x - reprojected[i].x;
-        double dy = image_points[i].y - reprojected[i].y;
-        reprojection_error += std::sqrt(dx * dx + dy * dy);
-      }
-      reprojection_error /= static_cast<double>(image_points.size());
-
-      // ---------- NEW: Re-estimate translation using smoothed R and depth center ----------
-      bool used_depth_center = false;
-      double center_depth_std_mm = 0.0;
-      Eigen::Vector3d t_refined = t_pnp;
-
-      const bool use_depth_center = this->get_parameter("use_depth_center_translation").as_bool();
-      if (use_depth_center)
-      {
-        // CAD center point in object frame {O}
-        if (base_index < cad_points_object_.size())
+        // Get 3D point from depth for SVD
+        auto depth_center = get3DPoint(depth_img, det.center.x, det.center.y,
+                                       depth_min_mm, depth_max_mm, transformer);
+        if (depth_center.has_value())
         {
-          const Eigen::Vector3d pO_center = cad_points_object_[base_index];  // meters
-
-          // Filtered center 3D point in camera frame {C} from depth
-          auto pC_center_f = getFilteredCenterPointC(
-              tagId,
-              det.center.x, det.center.y,
-              depth_img, transformer,
-              depth_min_mm, depth_max_mm,
-              &center_depth_std_mm);
-
-          if (pC_center_f.has_value())
-          {
-            // Closed-form translation with SMOOTHED R:
-            // pC_center ≈ R_smoothed * pO_center + t  =>  t = pC_center - R_smoothed * pO_center
-            const Eigen::Vector3d t_depth = (*pC_center_f) - (R_pnp * pO_center);
-
-            // Optional sanity gate vs PnP translation
-            const double gate_mm = this->get_parameter("depth_vs_pnp_gate_mm").as_double();
-            const double delta_mm = (t_depth - t_pnp).norm() * 1000.0;
-
-            if (gate_mm <= 0.0 || delta_mm <= gate_mm)
-            {
-              t_refined = t_depth;
-              used_depth_center = true;
-            }
-            else
-            {
-              // Fallback to PnP translation if mismatch is too large
-              t_refined = t_pnp;
-              used_depth_center = false;
-            }
-          }
+          global_pts_O.push_back(cad_points_object_[base_index]);
+          global_pts_C.push_back(depth_center->point);
+          global_depth_stds.push_back(depth_center->depth_variance_mm);
         }
       }
 
-      tag_results.push_back({
-          tagId,
-          R_pnp,          // Use smoothed rotation
-          t_refined,      // Use depth-refined translation (with smoothed R)
-          reprojection_error,
-          center_depth_std_mm,
-          used_depth_center
-      });
+      // ---- Add 4 corners ----
+      for (int i = 0; i < 4; ++i)
+      {
+        const size_t idx_obj = base_index + static_cast<size_t>(i + 1);
+
+        global_image_points.emplace_back(det.corners[i].x, det.corners[i].y);
+        const auto& pt3d = cad_points_object_[idx_obj];
+        global_object_points.emplace_back(
+            static_cast<float>(pt3d.x() * 1000.0),
+            static_cast<float>(pt3d.y() * 1000.0),
+            static_cast<float>(pt3d.z() * 1000.0));
+
+        // Get 3D point from depth for SVD
+        auto depth_corner = get3DPoint(depth_img, det.corners[i].x, det.corners[i].y,
+                                       depth_min_mm, depth_max_mm, transformer);
+        if (depth_corner.has_value())
+        {
+          global_pts_O.push_back(cad_points_object_[idx_obj]);
+          global_pts_C.push_back(depth_corner->point);
+          global_depth_stds.push_back(depth_corner->depth_variance_mm);
+        }
+      }
     }
 
     // Require minimum tag coverage
@@ -831,23 +796,112 @@ private:
       return;
     }
 
-    if (tag_results.empty())
+    // ============================================================
+    // METHOD A: MULTI-TAG GLOBAL PnP (2D→3D)
+    // ============================================================
+
+    bool pnp_valid = false;
+    Eigen::Matrix3d R_pnp = Eigen::Matrix3d::Identity();
+    Eigen::Vector3d t_pnp = Eigen::Vector3d::Zero();
+    double pnp_reproj_mean_px = 0.0;
+    double pnp_inliers_ratio = 0.0;
+    int pnp_tags_used = valid_tag_count;
+
+    if (global_image_points.size() >= 4)
     {
-      RCLCPP_WARN_THROTTLE(get_logger(), *this->get_clock(), 2000,
-                           "No valid per-TAG PnP results");
-      return;
+      cv::Mat rvec, tvec;
+      std::vector<int> inliers;
+
+      bool pnp_success = cv::solvePnPRansac(
+          global_object_points, global_image_points, camera_matrix_pnp, dist_coeffs_pnp,
+          rvec, tvec, false, 100, 4.0, 0.99, inliers);
+
+      if (pnp_success && inliers.size() >= 4)
+      {
+        pnp_valid = true;
+
+        cv::Mat R_cv;
+        cv::Rodrigues(rvec, R_cv);
+        R_pnp << R_cv.at<double>(0, 0), R_cv.at<double>(0, 1), R_cv.at<double>(0, 2),
+                 R_cv.at<double>(1, 0), R_cv.at<double>(1, 1), R_cv.at<double>(1, 2),
+                 R_cv.at<double>(2, 0), R_cv.at<double>(2, 1), R_cv.at<double>(2, 2);
+
+        t_pnp = Eigen::Vector3d(tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2));
+        t_pnp *= 0.001;  // mm -> m
+
+        // Compute global reprojection error
+        std::vector<cv::Point2f> reprojected;
+        cv::projectPoints(global_object_points, rvec, tvec, camera_matrix_pnp, dist_coeffs_pnp, reprojected);
+
+        double reproj_sum = 0.0;
+        RCLCPP_INFO(get_logger(), "=== PnP Per-Point Reproj Errors ===");
+        for (size_t i = 0; i < global_image_points.size(); ++i)
+        {
+          double dx = global_image_points[i].x - reprojected[i].x;
+          double dy = global_image_points[i].y - reprojected[i].y;
+          double err = std::sqrt(dx * dx + dy * dy);
+          reproj_sum += err;
+
+          // Determine which tag and which point (center or corner 0-3)
+          size_t tag_idx = i / 5;
+          size_t point_in_tag = i % 5;
+          const char* point_name = (point_in_tag == 0) ? "center" :
+                                   (point_in_tag == 1) ? "corner0" :
+                                   (point_in_tag == 2) ? "corner1" :
+                                   (point_in_tag == 3) ? "corner2" : "corner3";
+          int tag_id = (tag_idx < used_tag_ids.size()) ? used_tag_ids[tag_idx] : -1;
+
+          RCLCPP_INFO(get_logger(), "  [%zu] Tag%d.%s: det(%.1f,%.1f) -> reproj(%.1f,%.1f) CAD(%.1f,%.1f,%.1f)mm err=%.1f px",
+                      i, tag_id, point_name,
+                      global_image_points[i].x, global_image_points[i].y,
+                      reprojected[i].x, reprojected[i].y,
+                      global_object_points[i].x, global_object_points[i].y, global_object_points[i].z,
+                      err);
+        }
+        pnp_reproj_mean_px = reproj_sum / static_cast<double>(global_image_points.size());
+        pnp_inliers_ratio = static_cast<double>(inliers.size()) / static_cast<double>(global_image_points.size());
+        RCLCPP_INFO(get_logger(), "PnP: mean_reproj=%.2f px, inliers=%zu/%zu (%.1f%%)",
+                    pnp_reproj_mean_px, inliers.size(), global_image_points.size(), pnp_inliers_ratio * 100.0);
+      }
     }
 
-    // Select tag with lowest reprojection error
-    auto best_it = std::min_element(tag_results.begin(), tag_results.end(),
-        [](const TagResult &a, const TagResult &b) {
-          return a.reprojection_error_px < b.reprojection_error_px;
-        });
+    // ============================================================
+    // METHOD B: MULTI-TAG SVD (3D→3D, Umeyama)
+    // ============================================================
 
-    const TagResult &best = *best_it;
-    const Eigen::Matrix3d &R_final = best.R;
-    const Eigen::Vector3d &t_final = best.t;
-    const double reprojection_error = best.reprojection_error_px;
+    bool svd_valid = false;
+    Eigen::Matrix3d R_svd = Eigen::Matrix3d::Identity();
+    Eigen::Vector3d t_svd = Eigen::Vector3d::Zero();
+    double svd_rmse_m = 0.0;
+    int svd_pairs_used = static_cast<int>(global_pts_O.size());
+    double svd_mean_depth_std_mm = 0.0;
+
+    if (global_pts_O.size() >= 3 && global_pts_C.size() == global_pts_O.size())
+    {
+      auto svd_result = kinect::RigidTransformSVD::estimate(global_pts_O, global_pts_C);
+      if (svd_result.has_value())
+      {
+        // Reject reflections
+        if (svd_result->rotation.determinant() > 0.0)
+        {
+          svd_valid = true;
+          R_svd = svd_result->rotation;
+          t_svd = svd_result->translation;
+          svd_rmse_m = svd_result->rmse;
+
+          // Compute mean depth std
+          if (!global_depth_stds.empty())
+          {
+            svd_mean_depth_std_mm = std::accumulate(global_depth_stds.begin(), global_depth_stds.end(), 0.0)
+                                    / static_cast<double>(global_depth_stds.size());
+          }
+        }
+      }
+    }
+
+    // ============================================================
+    // PUBLISH RESULTS
+    // ============================================================
 
     stats_accepted_poses_++;
 
@@ -872,34 +926,118 @@ private:
     }
     last_pose_time_ = stamp;
 
-    Eigen::Quaterniond orientation(R_final);
+    // ---- Topic 1: PnP Pose (/apriltag/object_pose_pnp) ----
+    if (pnp_valid)
+    {
+      geometry_msgs::msg::PoseWithCovarianceStamped pose_pnp_msg;
+      pose_pnp_msg.header.stamp = stamp;
+      pose_pnp_msg.header.frame_id = camera_frame_id;
 
-    geometry_msgs::msg::PoseWithCovarianceStamped pose_msg;
-    pose_msg.header.stamp = stamp;
-    pose_msg.header.frame_id = camera_frame_id;
+      Eigen::Quaterniond q_pnp(R_pnp);
+      pose_pnp_msg.pose.pose.position.x = t_pnp.x();
+      pose_pnp_msg.pose.pose.position.y = t_pnp.y();
+      pose_pnp_msg.pose.pose.position.z = t_pnp.z();
+      pose_pnp_msg.pose.pose.orientation.x = q_pnp.x();
+      pose_pnp_msg.pose.pose.orientation.y = q_pnp.y();
+      pose_pnp_msg.pose.pose.orientation.z = q_pnp.z();
+      pose_pnp_msg.pose.pose.orientation.w = q_pnp.w();
 
-    pose_msg.pose.pose.position.x = t_final.x();
-    pose_msg.pose.pose.position.y = t_final.y();
-    pose_msg.pose.pose.position.z = t_final.z();
+      // Diagnostics in covariance (debug purpose):
+      // covariance[0]: global reproj mean (px)
+      // covariance[1]: RANSAC inliers ratio (0-1)
+      // covariance[2]: used tags count
+      std::fill(pose_pnp_msg.pose.covariance.begin(), pose_pnp_msg.pose.covariance.end(), 0.0);
+      pose_pnp_msg.pose.covariance[0] = pnp_reproj_mean_px;
+      pose_pnp_msg.pose.covariance[1] = pnp_inliers_ratio;
+      pose_pnp_msg.pose.covariance[2] = static_cast<double>(pnp_tags_used);
 
-    pose_msg.pose.pose.orientation.x = orientation.x();
-    pose_msg.pose.pose.orientation.y = orientation.y();
-    pose_msg.pose.pose.orientation.z = orientation.z();
-    pose_msg.pose.pose.orientation.w = orientation.w();
+      pub_object_pose_pnp_->publish(pose_pnp_msg);
 
-    // Store reprojection error for downstream quality assessment
-    std::fill(pose_msg.pose.covariance.begin(), pose_msg.pose.covariance.end(), 0.0);
-    pose_msg.pose.covariance[0] = reprojection_error;
+      // Also publish to legacy topic for backward compatibility
+      pub_object_pose_->publish(pose_pnp_msg);
+    }
 
-    pub_object_pose_->publish(pose_msg);
+    // ---- Topic 2: SVD Pose (/apriltag/object_pose_svd) ----
+    if (svd_valid)
+    {
+      geometry_msgs::msg::PoseWithCovarianceStamped pose_svd_msg;
+      pose_svd_msg.header.stamp = stamp;
+      pose_svd_msg.header.frame_id = camera_frame_id;
 
+      Eigen::Quaterniond q_svd(R_svd);
+      pose_svd_msg.pose.pose.position.x = t_svd.x();
+      pose_svd_msg.pose.pose.position.y = t_svd.y();
+      pose_svd_msg.pose.pose.position.z = t_svd.z();
+      pose_svd_msg.pose.pose.orientation.x = q_svd.x();
+      pose_svd_msg.pose.pose.orientation.y = q_svd.y();
+      pose_svd_msg.pose.pose.orientation.z = q_svd.z();
+      pose_svd_msg.pose.pose.orientation.w = q_svd.w();
+
+      // Diagnostics in covariance (debug purpose):
+      // covariance[0]: rmse (m)
+      // covariance[1]: used 3D pairs count
+      // covariance[2]: mean depth std (mm)
+      std::fill(pose_svd_msg.pose.covariance.begin(), pose_svd_msg.pose.covariance.end(), 0.0);
+      pose_svd_msg.pose.covariance[0] = svd_rmse_m;
+      pose_svd_msg.pose.covariance[1] = static_cast<double>(svd_pairs_used);
+      pose_svd_msg.pose.covariance[2] = svd_mean_depth_std_mm;
+
+      pub_object_pose_svd_->publish(pose_svd_msg);
+    }
+
+    // ---- Topic 3: Comparison (/apriltag/object_pose_compare) ----
+    if (pnp_valid || svd_valid)
+    {
+      std_msgs::msg::Float64MultiArray compare_msg;
+
+      // data[0] = trans_diff_mm
+      // data[1] = rot_diff_deg
+      // data[2] = reproj_px (PnP)
+      // data[3] = rmse_mm (SVD)
+      // data[4] = tags_used_pnp
+      // data[5] = pairs_used_svd
+      compare_msg.data.resize(6, 0.0);
+
+      if (pnp_valid && svd_valid)
+      {
+        // Translation difference
+        double trans_diff_m = (t_pnp - t_svd).norm();
+        compare_msg.data[0] = trans_diff_m * 1000.0;  // mm
+
+        // Rotation difference
+        Eigen::Matrix3d R_diff = R_pnp.transpose() * R_svd;
+        Eigen::AngleAxisd aa_diff(R_diff);
+        compare_msg.data[1] = aa_diff.angle() * 180.0 / M_PI;  // degrees
+      }
+
+      compare_msg.data[2] = pnp_valid ? pnp_reproj_mean_px : -1.0;
+      compare_msg.data[3] = svd_valid ? (svd_rmse_m * 1000.0) : -1.0;  // mm
+      compare_msg.data[4] = static_cast<double>(pnp_tags_used);
+      compare_msg.data[5] = static_cast<double>(svd_pairs_used);
+
+      pub_object_pose_compare_->publish(compare_msg);
+    }
+
+    // Log summary
     RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 2000,
-                         "Pose: TAG#%d (best of %d) | Reproj: %.2f px | use_center_depth=%s | center_depth_std=%.1f mm | %.1f Hz (%zu)",
-                         best.tagId, valid_tag_count,
-                         reprojection_error,
-                         best.used_depth_center ? "true" : "false",
-                         best.center_depth_std_mm,
+                         "Multi-Tag Pose | PnP: %s (reproj=%.2f px, inliers=%.1f%%, tags=%d) | "
+                         "SVD: %s (rmse=%.2f mm, pairs=%d, depth_std=%.1f mm) | %.1f Hz (%zu)",
+                         pnp_valid ? "OK" : "FAIL", pnp_reproj_mean_px, pnp_inliers_ratio * 100.0, pnp_tags_used,
+                         svd_valid ? "OK" : "FAIL", svd_rmse_m * 1000.0, svd_pairs_used, svd_mean_depth_std_mm,
                          pose_hz, stats_accepted_poses_);
+
+    // Log comparison when both methods succeed
+    if (pnp_valid && svd_valid)
+    {
+      double trans_diff_mm = (t_pnp - t_svd).norm() * 1000.0;
+      Eigen::Matrix3d R_diff = R_pnp.transpose() * R_svd;
+      Eigen::AngleAxisd aa_diff(R_diff);
+      double rot_diff_deg = aa_diff.angle() * 180.0 / M_PI;
+
+      RCLCPP_INFO_THROTTLE(get_logger(), *this->get_clock(), 2000,
+                           "[Compare] PnP vs SVD: trans_diff=%.2f mm, rot_diff=%.2f deg",
+                           trans_diff_mm, rot_diff_deg);
+    }
   }
 
 private:
@@ -974,6 +1112,9 @@ private:
   // ROS interfaces
   rclcpp::Subscription<std_msgs::msg::UInt8MultiArray>::SharedPtr sub_raw_calib_;
   rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pub_object_pose_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pub_object_pose_pnp_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr pub_object_pose_svd_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr pub_object_pose_compare_;
   image_transport::Publisher pub_marked_;
 };
 

@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QScrollArea,
     QPushButton,
     QSizePolicy,
     QTextEdit,
@@ -347,7 +348,12 @@ class MainWindow(QMainWindow):
 
         container = QWidget()
         container.setLayout(main_layout)
-        self.setCentralWidget(container)
+
+        # Make the central content scrollable so long panels don't overflow.
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setWidget(container)
+        self.setCentralWidget(scroll_area)
 
         self._apply_real_topic()
         self._apply_sim_topic()

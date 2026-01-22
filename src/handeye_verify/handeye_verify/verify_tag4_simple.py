@@ -158,7 +158,7 @@ class Tag4ScrewToucher(Node):
         self.declare_parameter("sample_interval_sec", 0.05)          # spacing between samples
         self.declare_parameter("sample_timeout_sec", 1.0)           # time to wait for 4 corners per sample
         self.declare_parameter("stamp_coherence_ms", 5.0)           # max stamp spread among 4 corners
-        self.declare_parameter("reference_point_mm", [150.0, -675.0, 83.5])
+        self.declare_parameter("reference_point_mm", [0.0, -675.0, 83.5])
         self.declare_parameter("save_samples_csv", "")              # optional: save samples to CSV
 
         # Plotting parameters

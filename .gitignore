@@ -4,4 +4,13 @@ build/
 install/
 src/apriltag_detector/external/
 src/apriltag_detector/external/apriltag
+src/apriltag_detector/external/build/
+src/handeye_gui/handeye_gui/__pycache__/app.cpython-312.pyc
+src/handeye_verify/handeye_verify/__pycache__/__init__.cpython-312.pyc
+src/handeye_verify/handeye_verify/__pycache__/plot_repeatability_errors.cpython-312.pyc
+src/handeye_verify/handeye_verify/__pycache__/verify_dynamic_consistency.cpython-312.pyc
+src/handeye_verify/handeye_verify/__pycache__/verify_repeatability.cpython-312.pyc
+src/handeye_verify/handeye_verify/__pycache__/verify_tag4_simple.cpython-312.pyc
 src/apriltag_detector/external/apriltag
+src/handeye_gui/handeye_gui/__pycache__/app.cpython-312.pyc
+src/handeye_gui/handeye_gui/__pycache__/app.cpython-312.pyc

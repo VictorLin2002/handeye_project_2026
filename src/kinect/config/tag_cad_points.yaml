@@ -4,6 +4,8 @@ frame:
   unit: "mm"
 
 flat_points:
+  # CAD reference points for tags 0-9 (center + 4 corners per tag)
+
   # Tag id = 0, indices 0..4
   - index: 0
     tag_id: 0
@@ -116,7 +118,7 @@ flat_points:
   - index: 20
     tag_id: 4
     role: "center"
-    position: [0.0, -46.027, -46.9288]
+    position: [0, -46.027, -46.9288]
 
   - index: 21
     tag_id: 4
@@ -139,11 +141,11 @@ flat_points:
     position: [-17.5, -51.4348, -30.2853]
 
 
-  # Tag id = 5, indices 25..29
+  # Tag id = 5, indices 25..29 (corner_1 ↔ corner_3 swapped)
   - index: 25
     tag_id: 5
     role: "center"
-    position: [30.7137333333333, -32.3495666666667, 16.4136666666667]
+    position: [27.054, -37.23665, 10.86585]
 
   - index: 26
     tag_id: 5
@@ -166,11 +168,11 @@ flat_points:
     position: [9.7176, -43.1479, 27.5093]
 
 
-  # Tag id = 6, indices 30..34
+  # Tag id = 6, indices 30..34 (corner_1 ↔ corner_3 swapped)
   - index: 30
     tag_id: 6
     role: "center"
-    position: [40.2573333333333, 19.2139, 16.4136666666667]
+    position: [43.7743, 14.2231, 10.86585]
 
   - index: 31
     tag_id: 6
@@ -193,11 +195,11 @@ flat_points:
     position: [44.039, -4.0915, 27.5093]
 
 
-  # Tag id = 7, indices 35..39
+  # Tag id = 7, indices 35..39 (corner_1 ↔ corner_3 swapped)
   - index: 35
     tag_id: 7
     role: "center"
-    position: [-5.83333333333333, 44.2244, 16.4136666666667]
+    position: [0, 46.027, 10.86585]
 
   - index: 36
     tag_id: 7
@@ -220,11 +222,11 @@ flat_points:
     position: [17.5, 40.6192, 27.5093]
 
 
-  # Tag id = 8, indices 40..44
+  # Tag id = 8, indices 40..44 (corner_1 ↔ corner_3 swapped)
   - index: 40
     tag_id: 8
     role: "center"
-    position: [-43.8625333333333, 8.11823333333333, 16.4136666666667]
+    position: [-43.7743, 14.2231, 10.86585]
 
   - index: 41
     tag_id: 8
@@ -247,11 +249,11 @@ flat_points:
     position: [-33.2234, 29.1955, 27.5093]
 
 
-  # Tag id = 9, indices 45..49
+  # Tag id = 9, indices 45..49 (corner_1 ↔ corner_3 swapped)
   - index: 45
     tag_id: 9
     role: "center"
-    position: [-21.2752, -39.2070666666667, 16.4136666666667]
+    position: [-27.054, -37.23665, 10.86585]
 
   - index: 46
     tag_id: 9
