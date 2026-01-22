@@ -7,6 +7,8 @@ import cv2
 import numpy as np
 import rclpy
 from cv_bridge import CvBridge
+import time
+
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QObject, QProcess
 from PyQt5.QtGui import QImage, QPixmap, QTextCursor
 from PyQt5.QtWidgets import (
@@ -161,7 +163,7 @@ class CommandControl(QWidget):
     def __init__(
         self,
         command_def: CommandDefinition,
-        log_output: QTextEdit,
+        log_output: Optional[QTextEdit],
         working_dir: Optional[Path] = None,
     ) -> None:
         super().__init__()
@@ -182,6 +184,8 @@ class CommandControl(QWidget):
         self.start_button = QPushButton("Start")
         self.stop_button = QPushButton("Stop")
         self.stop_button.setEnabled(False)
+        self.start_button.setFixedWidth(64)
+        self.stop_button.setFixedWidth(64)
 
         self.start_button.clicked.connect(self._start)
         self.stop_button.clicked.connect(self._stop)
@@ -206,6 +210,8 @@ class CommandControl(QWidget):
         self.runner.stop()
 
     def _append_log(self, text: str) -> None:
+        if self.log_output is None:
+            return
         self.log_output.moveCursor(QTextCursor.End)
         self.log_output.insertPlainText(text)
         self.log_output.moveCursor(QTextCursor.End)
@@ -229,10 +235,15 @@ class MainWindow(QMainWindow):
 
         self._last_real_image = None
         self._last_sim_image = None
+        self._last_real_image_time: Optional[float] = None
+        self._arm_connected = False
 
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setPlaceholderText("Streaming logs (frequent updates)")
+        self.tag_log_output = QTextEdit()
+        self.tag_log_output.setReadOnly(True)
+        self.tag_log_output.setPlaceholderText("Tag localizer output (high frequency)")
         self.event_log_output = QTextEdit()
         self.event_log_output.setReadOnly(True)
         self.event_log_output.setPlaceholderText("Event logs (start/stop/status)")
@@ -292,9 +303,14 @@ class MainWindow(QMainWindow):
         command_group = QGroupBox("Workflow Controls")
         command_layout = QVBoxLayout()
         for command in commands:
-            control = CommandControl(command, self.log_output, working_dir=WORKSPACE_ROOT)
+            log_output = self.log_output
+            if command.name == "Tag Localizer":
+                log_output = self.tag_log_output
+            control = CommandControl(command, log_output, working_dir=WORKSPACE_ROOT)
             if command.name == "Verify Dynamic Consistency":
                 self.dynamic_consistency_control = control
+            if command.name == "RTDE Action":
+                control.runner.status_signal.connect(self._update_arm_status)
             self.command_controls.append(control)
             command_layout.addWidget(control)
         command_group.setLayout(command_layout)
@@ -327,8 +343,15 @@ class MainWindow(QMainWindow):
 
         status_group = QGroupBox("Status")
         self.status_label = QLabel("handeye_logger/status: awaiting data")
+        status_indicators = QHBoxLayout()
+        self.camera_status_label = self._build_status_indicator("Camera", "disconnected")
+        self.arm_status_label = self._build_status_indicator("Arm", "disconnected")
+        status_indicators.addWidget(self.camera_status_label)
+        status_indicators.addWidget(self.arm_status_label)
+        status_indicators.addStretch(1)
         status_layout = QVBoxLayout()
         status_layout.addWidget(self.status_label)
+        status_layout.addLayout(status_indicators)
         status_group.setLayout(status_layout)
 
         images_layout = QGridLayout()
@@ -343,6 +366,8 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(status_group)
         main_layout.addWidget(QLabel("Event Logs"))
         main_layout.addWidget(self.event_log_output)
+        main_layout.addWidget(QLabel("Tag Localizer Logs"))
+        main_layout.addWidget(self.tag_log_output)
         main_layout.addWidget(QLabel("Streaming Logs"))
         main_layout.addWidget(self.log_output)
 
@@ -361,6 +386,9 @@ class MainWindow(QMainWindow):
         self.spin_timer = QTimer()
         self.spin_timer.timeout.connect(self._spin_ros)
         self.spin_timer.start(10)
+        self.status_timer = QTimer()
+        self.status_timer.timeout.connect(self._refresh_status_indicators)
+        self.status_timer.start(500)
 
     def _build_topic_selector(self, default: str, options: List[str]) -> QComboBox:
         selector = QComboBox()
@@ -379,6 +407,32 @@ class MainWindow(QMainWindow):
         layout.addLayout(topic_row)
         group.setLayout(layout)
         return group
+
+    def _build_status_indicator(self, label: str, state: str) -> QLabel:
+        indicator = QLabel()
+        indicator.setAlignment(Qt.AlignCenter)
+        indicator.setMinimumWidth(140)
+        self._set_indicator_state(indicator, label, state)
+        return indicator
+
+    def _set_indicator_state(self, indicator: QLabel, label: str, state: str) -> None:
+        state = state.lower()
+        colors = {
+            "connected": "#34c759",
+            "warning": "#ff9500",
+            "disconnected": "#ff3b30",
+        }
+        color = colors.get(state, "#8e8e93")
+        indicator.setText(f"{label}: {state}")
+        indicator.setStyleSheet(
+            "QLabel {"
+            f"background-color: {color};"
+            "color: white;"
+            "border-radius: 10px;"
+            "padding: 4px 8px;"
+            "font-weight: 600;"
+            "}"
+        )
 
     def _run_build(self) -> None:
         self.build_runner.start(self.build_command_edit.text())
@@ -416,11 +470,25 @@ class MainWindow(QMainWindow):
 
     def _update_real_image(self, image: QImage) -> None:
         self._last_real_image = image
+        self._last_real_image_time = time.time()
         self._render_image(self.real_image_label, image)
 
     def _update_sim_image(self, image: QImage) -> None:
         self._last_sim_image = image
         self._render_image(self.sim_image_label, image)
+
+    def _update_arm_status(self, status: str) -> None:
+        self._arm_connected = status.startswith("running")
+
+    def _refresh_status_indicators(self) -> None:
+        now = time.time()
+        if self._last_real_image_time is not None and (now - self._last_real_image_time) < 1.0:
+            self._set_indicator_state(self.camera_status_label, "Camera", "connected")
+        else:
+            self._set_indicator_state(self.camera_status_label, "Camera", "disconnected")
+
+        arm_state = "connected" if self._arm_connected else "disconnected"
+        self._set_indicator_state(self.arm_status_label, "Arm", arm_state)
 
     def _render_image(self, label: QLabel, image: QImage) -> None:
         pixmap = QPixmap.fromImage(image)
@@ -440,6 +508,7 @@ class MainWindow(QMainWindow):
 
     def shutdown(self) -> None:
         self.spin_timer.stop()
+        self.status_timer.stop()
         self.build_runner.stop()
         for control in self.command_controls:
             control.stop()
