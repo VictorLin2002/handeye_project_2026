@@ -1,8 +1,8 @@
-# 整合版 verify_tag4_simple.py 使用指南
+# ROS 2 驗證節點使用指南（verify_handeye_touch）
 
 ## 🎉 新功能
 
-現在 `verify_tag4_simple.py` 已經整合了自動繪圖功能！一個命令就能完成：
+現在 ROS 2 節點 `handeye_verify/verify_tag4_simple.py` 已經整合了自動繪圖功能！一個命令就能完成：
 - ✅ 運行repeatability測試
 - ✅ 自動保存CSV數據
 - ✅ 自動生成分析圖表
@@ -13,7 +13,7 @@
 
 ```bash
 # 只需運行這一個命令！
-python3 scripts/handeye/verify/verify_tag4_simple.py \
+ros2 run handeye_verify verify_handeye_touch \
   --ros-args \
   -p test_mode:=repeatability \
   -p num_samples:=50
@@ -48,7 +48,7 @@ python3 scripts/handeye/verify/verify_tag4_simple.py \
 
 ### 範例1：預設配置（最常用）
 ```bash
-python3 scripts/handeye/verify/verify_tag4_simple.py \
+ros2 run handeye_verify verify_handeye_touch \
   --ros-args \
   -p test_mode:=repeatability \
   -p num_samples:=50
@@ -60,7 +60,7 @@ python3 scripts/handeye/verify/verify_tag4_simple.py \
 
 ### 範例2：禁用自動繪圖
 ```bash
-python3 scripts/handeye/verify/verify_tag4_simple.py \
+ros2 run handeye_verify verify_handeye_touch \
   --ros-args \
   -p test_mode:=repeatability \
   -p num_samples:=50 \
@@ -71,7 +71,7 @@ python3 scripts/handeye/verify/verify_tag4_simple.py \
 
 ### 範例3：使用簡化圖表（更快）
 ```bash
-python3 scripts/handeye/verify/verify_tag4_simple.py \
+ros2 run handeye_verify verify_handeye_touch \
   --ros-args \
   -p test_mode:=repeatability \
   -p num_samples:=50 \
@@ -82,7 +82,7 @@ python3 scripts/handeye/verify/verify_tag4_simple.py \
 
 ### 範例4：同時生成兩種圖表
 ```bash
-python3 scripts/handeye/verify/verify_tag4_simple.py \
+ros2 run handeye_verify verify_handeye_touch \
   --ros-args \
   -p test_mode:=repeatability \
   -p num_samples:=50 \
@@ -93,7 +93,7 @@ python3 scripts/handeye/verify/verify_tag4_simple.py \
 
 ### 範例5：快速測試（10個樣本）
 ```bash
-python3 scripts/handeye/verify/verify_tag4_simple.py \
+ros2 run handeye_verify verify_handeye_touch \
   --ros-args \
   -p test_mode:=repeatability \
   -p num_samples:=10 \
@@ -104,7 +104,7 @@ python3 scripts/handeye/verify/verify_tag4_simple.py \
 
 ### 範例6：自定義輸出目錄
 ```bash
-python3 scripts/handeye/verify/verify_tag4_simple.py \
+ros2 run handeye_verify verify_handeye_touch \
   --ros-args \
   -p test_mode:=repeatability \
   -p num_samples:=50 \
@@ -115,7 +115,7 @@ python3 scripts/handeye/verify/verify_tag4_simple.py \
 
 ### 範例7：自定義參考點
 ```bash
-python3 scripts/handeye/verify/verify_tag4_simple.py \
+ros2 run handeye_verify verify_handeye_touch \
   --ros-args \
   -p test_mode:=repeatability \
   -p num_samples:=50 \
@@ -223,7 +223,7 @@ ros2 topic echo /apriltag/tag4_corner0_3d --once
 ### 舊方式（分離）
 ```bash
 # 步驟1：運行測試
-python3 verify_tag4_simple.py -p save_samples_csv:=/tmp/test.csv
+ros2 run handeye_verify verify_handeye_touch -p save_samples_csv:=/tmp/test.csv
 
 # 步驟2：生成圖表
 python3 plot_repeatability_errors.py --csv /tmp/test.csv --output result.png
@@ -232,7 +232,7 @@ python3 plot_repeatability_errors.py --csv /tmp/test.csv --output result.png
 ### 新方式（整合）✨
 ```bash
 # 一步完成！
-python3 verify_tag4_simple.py -p num_samples:=50
+ros2 run handeye_verify verify_handeye_touch -p num_samples:=50
 ```
 
 **優勢**：
@@ -243,18 +243,21 @@ python3 verify_tag4_simple.py -p num_samples:=50
 
 ## 🔙 向後兼容
 
-### 舊腳本仍可用
+### 舊工作流程仍可用
 ```bash
-# 這些仍然可以工作
-./run_repeatability_test.sh
-./run_analysis.sh --csv data.csv
-python3 plot_repeatability_errors.py --csv data.csv
+# 直接使用 ROS 2 節點收集資料，再用繪圖腳本分析
+ros2 run handeye_verify verify_handeye_touch \
+  --ros-args \
+  -p test_mode:=repeatability \
+  -p save_samples_csv:=/tmp/test.csv
+
+python3 plot_repeatability_errors.py --csv /tmp/test.csv --output result.png
 ```
 
 ### 切換回舊行為
 如果您想要舊的行為（只運行測試不繪圖）：
 ```bash
-python3 verify_tag4_simple.py \
+ros2 run handeye_verify verify_handeye_touch \
   --ros-args \
   -p test_mode:=repeatability \
   -p auto_plot:=false \
