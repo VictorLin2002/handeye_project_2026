@@ -8,10 +8,10 @@ def main() -> None:
     node = Tag4ScrewToucher()
 
     try:
-        node.get_logger().info("Running repeatability test...")
-        ok = node.run_repeatability()
+        node.get_logger().info("Running touch sequence...")
+        ok = node.run_once_touch()
         if not ok:
-            node.get_logger().error("Repeatability test failed.")
+            node.get_logger().error("Touch sequence failed.")
     finally:
         node.destroy_node()
         rclpy.shutdown()
