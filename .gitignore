@@ -3,3 +3,5 @@ log/
 build/
 install/
 src/apriltag_detector/external/
+src/apriltag_detector/external/apriltag
+src/apriltag_detector/external/apriltag

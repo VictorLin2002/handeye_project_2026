@@ -39,10 +39,13 @@ case "${MODE}" in
     colcon build --packages-select apriltag_detector "${COLCON_ARGS[@]}"
     ;;
   handeye)
-    colcon build --packages-select handeye_logger handeye_solver "${COLCON_ARGS[@]}"
+    colcon build --packages-select handeye_logger handeye_logger_interfaces handeye_solver handeye_gui handeye_verify "${COLCON_ARGS[@]}"
+    ;;
+  rtde)
+    colcon build --packages-select rtde_controller rtde_controller_interfaces "${COLCON_ARGS[@]}"
     ;;
   *)
-    echo "Usage: $0 {all|vision|kinect|apriltag|handeye} [-- <colcon args>...]" >&2
+    echo "Usage: $0 {all|vision|kinect|apriltag|handeye|rtde} [-- <colcon args>...]" >&2
     echo "Example: $0 vision -- --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo" >&2
     exit 1
     ;;
