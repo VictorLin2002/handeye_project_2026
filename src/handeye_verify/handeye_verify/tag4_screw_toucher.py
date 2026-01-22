@@ -220,7 +220,8 @@ class Tag4ScrewToucher(Node):
         self.declare_parameter("z_max", 2.00)
         self.declare_parameter("speed", 0.10)
         self.declare_parameter("acc", 0.30)
-        self.declare_parameter("log_pose_detail", False)
+        if not self.has_parameter("log_pose_detail"):
+            self.declare_parameter("log_pose_detail", False)
 
         # -----------------------------
         # Load Transformations
@@ -741,4 +742,3 @@ class Tag4ScrewToucher(Node):
                     self.get_logger().error(f"Failed to generate plots: {e}")
 
         return True
-
