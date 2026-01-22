@@ -18,14 +18,13 @@ ROS 2 Workspace Menu
 2) Build: vision (kinect + apriltag_detector)
 3) Build: kinect
 4) Build: apriltag_detector
-5) Start core stack: scripts/start_all.sh
+5) Start hand-eye GUI
 6) Start hand-eye logger
 7) Run hand-eye solver
 8) Generate calibration poses
 9) Run calibration poses
-10) Verify Tag4 corner0 (touch verification)
+10) Verify touch (handeye)
 11) Start RTDE client (debug)
-12) Run Tag4 corner0 3D node
 0) Exit
 EOF
 }
@@ -39,14 +38,13 @@ while true; do
     2)  "${SCRIPT_DIR}/build.sh" vision ;;
     3)  "${SCRIPT_DIR}/build.sh" kinect ;;
     4)  "${SCRIPT_DIR}/build.sh" apriltag ;;
-    5)  "${SCRIPT_DIR}/start_all.sh" ;;
+    5)  ros2 run handeye_gui handeye_gui ;;
     6)  "${SCRIPT_DIR}/handeye/start_logger.sh" ;;
     7)  "${SCRIPT_DIR}/handeye/run_solver.sh" ;;
     8)  "${SCRIPT_DIR}/handeye/gen_calib_poses.sh" ;;
     9)  "${SCRIPT_DIR}/handeye/run_calib_poses.sh" ;;
-    10) "${SCRIPT_DIR}/handeye/verify/verify.sh" ;;
+    10) ros2 run handeye_verify verify_handeye_touch ;;
     11) "${SCRIPT_DIR}/tools/start_rtde_client.sh" ;;
-  12)  "${SCRIPT_DIR}/handeye/run_tag4_cornor0.sh" ;;
     0)  exit 0 ;;
     *)  echo "Invalid selection." ;;
   esac

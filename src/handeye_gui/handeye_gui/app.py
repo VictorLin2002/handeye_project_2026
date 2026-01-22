@@ -89,6 +89,7 @@ class CommandRunner(QObject):
 class RosInterface(QObject):
     real_image_signal = pyqtSignal(QImage)
     sim_image_signal = pyqtSignal(QImage)
+    marked_image_signal = pyqtSignal(QImage)
     status_signal = pyqtSignal(str)
 
     def __init__(self) -> None:
@@ -97,6 +98,7 @@ class RosInterface(QObject):
         self.bridge = CvBridge()
         self.real_sub = None
         self.sim_sub = None
+        self.marked_sub = None
         self.status_sub = self.node.create_subscription(
             Int64MultiArray,
             "/handeye_logger/status",
@@ -116,6 +118,21 @@ class RosInterface(QObject):
         self.sim_sub = self.node.create_subscription(Image, topic, self._sim_cb, 10)
         self.status_signal.emit(f"Sim image topic: {topic}")
 
+    def set_marked_topic(self, topic: str) -> None:
+        if self.marked_sub is not None:
+            self.node.destroy_subscription(self.marked_sub)
+        self.marked_sub = self.node.create_subscription(Image, topic, self._marked_cb, 10)
+        self.status_signal.emit(f"Marked image topic: {topic}")
+
+    def shutdown(self) -> None:
+        for sub in (self.real_sub, self.sim_sub, self.marked_sub, self.status_sub):
+            if sub is not None:
+                self.node.destroy_subscription(sub)
+        self.real_sub = None
+        self.sim_sub = None
+        self.marked_sub = None
+        self.status_sub = None
+
     def _status_cb(self, msg: Int64MultiArray) -> None:
         count = msg.data[0] if msg.data else 0
         stamp = msg.data[1] if len(msg.data) > 1 else 0
@@ -128,6 +145,10 @@ class RosInterface(QObject):
     def _sim_cb(self, msg: Image) -> None:
         image = self._to_qimage(msg)
         self.sim_image_signal.emit(image)
+
+    def _marked_cb(self, msg: Image) -> None:
+        image = self._to_qimage(msg)
+        self.marked_image_signal.emit(image)
 
     def _to_qimage(self, msg: Image) -> QImage:
         cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
@@ -231,11 +252,15 @@ class MainWindow(QMainWindow):
         self.ros_interface = RosInterface()
         self.ros_interface.real_image_signal.connect(self._update_real_image)
         self.ros_interface.sim_image_signal.connect(self._update_sim_image)
+        self.ros_interface.marked_image_signal.connect(self._update_marked_image)
         self.ros_interface.status_signal.connect(self._append_status)
 
         self._last_real_image = None
         self._last_sim_image = None
+        self._last_marked_image = None
         self._last_real_image_time: Optional[float] = None
+        self._last_sim_image_time: Optional[float] = None
+        self._last_marked_image_time: Optional[float] = None
         self._arm_connected = False
 
         self.log_output = QTextEdit()
@@ -294,6 +319,10 @@ class MainWindow(QMainWindow):
                 "ros2 run handeye_verify verify_repeatability",
             ),
             CommandDefinition(
+                "Verify Touch (ROS)",
+                "ros2 run handeye_verify verify_handeye_touch",
+            ),
+            CommandDefinition(
                 "Verify Dynamic Consistency",
                 "ros2 run handeye_verify verify_dynamic_consistency "
                 "--csv handeye_samples.csv --tbc 0 0 0 0 0 0 1",
@@ -323,23 +352,36 @@ class MainWindow(QMainWindow):
             "/simulation/image",
             ["/simulation/image", "/sim/image_raw", "/sim/color/image_raw"],
         )
+        self.marked_topic_edit = self._build_topic_selector(
+            "/apriltag/image_marked",
+            ["/apriltag/image_marked"],
+        )
         self.real_apply_button = QPushButton("Apply")
         self.sim_apply_button = QPushButton("Apply")
+        self.marked_apply_button = QPushButton("Apply")
         self.real_apply_button.clicked.connect(self._apply_real_topic)
         self.sim_apply_button.clicked.connect(self._apply_sim_topic)
+        self.marked_apply_button.clicked.connect(self._apply_marked_topic)
 
         real_group = self._build_image_group("Real Image", self.real_topic_edit, self.real_apply_button)
         sim_group = self._build_image_group("Sim Image", self.sim_topic_edit, self.sim_apply_button)
+        marked_group = self._build_image_group(
+            "Image Marked",
+            self.marked_topic_edit,
+            self.marked_apply_button,
+        )
 
         self.real_image_label = QLabel("No image")
         self.sim_image_label = QLabel("No image")
-        for label in (self.real_image_label, self.sim_image_label):
+        self.marked_image_label = QLabel("No image")
+        for label in (self.real_image_label, self.sim_image_label, self.marked_image_label):
             label.setAlignment(Qt.AlignCenter)
             label.setMinimumHeight(240)
             label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         real_group.layout().addWidget(self.real_image_label)
         sim_group.layout().addWidget(self.sim_image_label)
+        marked_group.layout().addWidget(self.marked_image_label)
 
         status_group = QGroupBox("Status")
         self.status_label = QLabel("handeye_logger/status: awaiting data")
@@ -357,6 +399,7 @@ class MainWindow(QMainWindow):
         images_layout = QGridLayout()
         images_layout.addWidget(real_group, 0, 0)
         images_layout.addWidget(sim_group, 0, 1)
+        images_layout.addWidget(marked_group, 1, 0, 1, 2)
 
         main_layout = QVBoxLayout()
         main_layout.addLayout(build_layout)
@@ -382,6 +425,7 @@ class MainWindow(QMainWindow):
 
         self._apply_real_topic()
         self._apply_sim_topic()
+        self._apply_marked_topic()
 
         self.spin_timer = QTimer()
         self.spin_timer.timeout.connect(self._spin_ros)
@@ -454,6 +498,9 @@ class MainWindow(QMainWindow):
     def _apply_sim_topic(self) -> None:
         self.ros_interface.set_sim_topic(self.sim_topic_edit.currentText())
 
+    def _apply_marked_topic(self) -> None:
+        self.ros_interface.set_marked_topic(self.marked_topic_edit.currentText())
+
     def _spin_ros(self) -> None:
         rclpy.spin_once(self.ros_interface.node, timeout_sec=0)
 
@@ -475,17 +522,42 @@ class MainWindow(QMainWindow):
 
     def _update_sim_image(self, image: QImage) -> None:
         self._last_sim_image = image
+        self._last_sim_image_time = time.time()
         self._render_image(self.sim_image_label, image)
+
+    def _update_marked_image(self, image: QImage) -> None:
+        self._last_marked_image = image
+        self._last_marked_image_time = time.time()
+        self._render_image(self.marked_image_label, image)
 
     def _update_arm_status(self, status: str) -> None:
         self._arm_connected = status.startswith("running")
 
     def _refresh_status_indicators(self) -> None:
         now = time.time()
-        if self._last_real_image_time is not None and (now - self._last_real_image_time) < 1.0:
+        real_recent = self._last_real_image_time is not None and (now - self._last_real_image_time) < 1.0
+        if real_recent:
             self._set_indicator_state(self.camera_status_label, "Camera", "connected")
         else:
             self._set_indicator_state(self.camera_status_label, "Camera", "disconnected")
+            if self._last_real_image is not None:
+                self.real_image_label.setPixmap(QPixmap())
+                self.real_image_label.setText("No image")
+                self._last_real_image = None
+
+        sim_recent = self._last_sim_image_time is not None and (now - self._last_sim_image_time) < 1.0
+        if not sim_recent and self._last_sim_image is not None:
+            self.sim_image_label.setPixmap(QPixmap())
+            self.sim_image_label.setText("No image")
+            self._last_sim_image = None
+
+        marked_recent = (
+            self._last_marked_image_time is not None and (now - self._last_marked_image_time) < 1.0
+        )
+        if not marked_recent and self._last_marked_image is not None:
+            self.marked_image_label.setPixmap(QPixmap())
+            self.marked_image_label.setText("No image")
+            self._last_marked_image = None
 
         arm_state = "connected" if self._arm_connected else "disconnected"
         self._set_indicator_state(self.arm_status_label, "Arm", arm_state)
@@ -500,6 +572,8 @@ class MainWindow(QMainWindow):
             self._render_image(self.real_image_label, self._last_real_image)
         if self._last_sim_image is not None:
             self._render_image(self.sim_image_label, self._last_sim_image)
+        if self._last_marked_image is not None:
+            self._render_image(self.marked_image_label, self._last_marked_image)
         super().resizeEvent(event)
 
     def closeEvent(self, event) -> None:
@@ -512,6 +586,7 @@ class MainWindow(QMainWindow):
         self.build_runner.stop()
         for control in self.command_controls:
             control.stop()
+        self.ros_interface.shutdown()
         self.ros_interface.node.destroy_node()
         rclpy.shutdown()
 
