@@ -209,6 +209,8 @@ class Tag4ScrewToucher(Node):
         # -----------------------------
         self.declare_parameter("approach_dist", 0.005)  # meters
         self.declare_parameter("visit_touch", True)
+        self.declare_parameter("repeat_touch", False)
+        self.declare_parameter("repeat_interval_sec", 0.5)
 
         self.declare_parameter("pause_each_point", True)
         self.declare_parameter("pause_mode", "time")    # manual | time | manual_or_time | none
