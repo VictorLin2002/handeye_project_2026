@@ -15,3 +15,5 @@ src/apriltag_detector/external/apriltag
 src/handeye_gui/handeye_gui/__pycache__/app.cpython-312.pyc
 src/handeye_gui/handeye_gui/__pycache__/app.cpython-312.pyc
 src/apriltag_detector/external/apriltag
+src/handeye_verify/handeye_verify/__pycache__/tag4_screw_toucher.cpython-312.pyc
+src/handeye_verify/handeye_verify/__pycache__/verify_touch.cpython-312.pyc
