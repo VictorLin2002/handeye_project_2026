@@ -147,11 +147,6 @@ class Tag4ScrewToucher(Node):
         super().__init__("tag4_screw_toucher")
 
         # -----------------------------
-        # Parameters: Mode selection
-        # -----------------------------
-        self.declare_parameter("test_mode", "repeatability")  # "touch" or "repeatability"
-
-        # -----------------------------
         # Parameters: Repeatability test
         # -----------------------------
         self.declare_parameter("num_samples", 200)
@@ -225,6 +220,7 @@ class Tag4ScrewToucher(Node):
         self.declare_parameter("z_max", 2.00)
         self.declare_parameter("speed", 0.10)
         self.declare_parameter("acc", 0.30)
+        self.declare_parameter("log_pose_detail", False)
         self.declare_parameter("log_pose_detail", False)
 
         # -----------------------------
@@ -301,7 +297,6 @@ class Tag4ScrewToucher(Node):
         self.get_logger().info("=" * 70)
         self.get_logger().info("Tag4 Screw Toucher / Repeatability")
         self.get_logger().info("=" * 70)
-        self.get_logger().info(f"Mode: {str(self.get_parameter('test_mode').value)}")
         self.get_logger().info("T_BC (Base->Camera):")
         for row in self.T_BC:
             self.get_logger().info(f"  [{row[0]:+.6f}, {row[1]:+.6f}, {row[2]:+.6f}, {row[3]:+.6f}]")
@@ -465,6 +460,13 @@ class Tag4ScrewToucher(Node):
         goal.speed = float(speed)
         goal.acc = float(acc)
 
+        if bool(self.get_parameter("log_pose_detail").value):
+            self.get_logger().info(
+                f"[{label}] pose6: x={pose6[0]:+.6f}, y={pose6[1]:+.6f}, z={pose6[2]:+.6f}, "
+                f"rx={pose6[3]:+.4f}, ry={pose6[4]:+.4f}, rz={pose6[5]:+.4f}"
+            )
+        else:
+            self.get_logger().info(f"[{label}] sending motion command")
         if bool(self.get_parameter("log_pose_detail").value):
             self.get_logger().info(
                 f"[{label}] pose6: x={pose6[0]:+.6f}, y={pose6[1]:+.6f}, z={pose6[2]:+.6f}, "
@@ -760,12 +762,9 @@ def main():
             if mode == "repeatability":
                 node.get_logger().info("Running repeatability test...")
                 ok = node.run_repeatability()
-            elif mode == "touch":
-                node.get_logger().info("Running touch sequence...")
-                ok = node.run_once_touch()
             else:
                 node.get_logger().error(
-                    "Unknown test_mode. Use 'repeatability' or 'touch'."
+                    "Touch mode is currently disabled. Use the repeatability entry point instead."
                 )
                 ok = False
 

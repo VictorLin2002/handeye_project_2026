@@ -18,7 +18,7 @@ setup(
     license='TODO: License declaration',
     entry_points={
         'console_scripts': [
-            'verify_handeye_touch = handeye_verify.verify_tag4_simple:main',
+            'verify_handeye_touch = handeye_verify.verify_touch:main',
             'verify_repeatability = handeye_verify.verify_repeatability:main',
             'verify_dynamic_consistency = handeye_verify.verify_dynamic_consistency:main',
         ],
