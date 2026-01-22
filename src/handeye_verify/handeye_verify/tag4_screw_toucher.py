@@ -377,12 +377,16 @@ class Tag4ScrewToucher(Node):
     def _tag_frame_B(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         corners_B = self._corners_B()
         center_B = np.mean(corners_B, axis=0)
+        corners_C = np.array(self.corners_C, dtype=float)  # type: ignore
+        center_C = np.mean(corners_C, axis=0)
 
-        v1_C = self.corners_C[1] - self.corners_C[0]  # type: ignore
-        v2_C = self.corners_C[2] - self.corners_C[0]  # type: ignore
+        v1_C = corners_C[1] - corners_C[0]
+        v2_C = corners_C[2] - corners_C[0]
         normal_C = normalize(np.cross(v1_C, v2_C))
         if normal_C is None:
             raise RuntimeError("Degenerate normal from corners (C frame).")
+        if float(np.dot(normal_C, center_C)) > 0.0:
+            normal_C = -normal_C
 
         normal_B = normalize(self.T_BC[:3, :3] @ normal_C)
         if normal_B is None:

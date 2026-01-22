@@ -439,13 +439,16 @@ private:
       pub_corner3d_[corner_idx]->publish(out);
     }
 
-    RCLCPP_INFO_THROTTLE(
-      get_logger(), *this->get_clock(), 1000,
-      "Tag%d corner%d: uv=(%d,%d) depth=%u mm | det-time=%.6f depth-time=%.6f dt=%.4f s | C=(%.4f, %.4f, %.4f) m",
-      target_tag_id_, corner_idx, u, v, depth_mm,
-      det_stamp_sec, depth_stamp_sec, time_diff,
-      out.point.x, out.point.y, out.point.z
-    );
+    if (target_tag_id_ != 10)
+    {
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *this->get_clock(), 1000,
+        "Tag%d corner%d: uv=(%d,%d) depth=%u mm | det-time=%.6f depth-time=%.6f dt=%.4f s | C=(%.4f, %.4f, %.4f) m",
+        target_tag_id_, corner_idx, u, v, depth_mm,
+        det_stamp_sec, depth_stamp_sec, time_diff,
+        out.point.x, out.point.y, out.point.z
+      );
+    }
   }
 
 private:
