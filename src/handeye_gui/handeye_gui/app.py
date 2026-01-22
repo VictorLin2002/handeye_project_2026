@@ -320,6 +320,9 @@ class MainWindow(QMainWindow):
             ),
             CommandDefinition(
                 "Verify Touch (ROS)",
+                "trap 'kill 0' EXIT; "
+                "ros2 run kinect tag4_corner0_3d_node "
+                "--ros-args -p target_tag_id:=10 & "
                 "ros2 run handeye_verify verify_handeye_touch",
             ),
             CommandDefinition(
