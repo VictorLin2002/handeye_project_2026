@@ -266,7 +266,14 @@ private:
         return;
       }
 
-      // Use AprilTag center directly (simpler than PnP)
+      // Publish 3D points for each corner (for touch mode)
+      for (size_t i = 0; i < tag->corners.size(); ++i)
+      {
+        const auto &corner = tag->corners[i];
+        processCorner(static_cast<int>(i), color_stamp_sec, corner.x, corner.y);
+      }
+
+      // Publish tag center (for repeatability mode)
       processCenterFromTag(tag, color_stamp_sec, color_stamp);
     }
     catch (const std::exception& e)
@@ -432,13 +439,16 @@ private:
       pub_corner3d_[corner_idx]->publish(out);
     }
 
-    RCLCPP_INFO_THROTTLE(
-      get_logger(), *this->get_clock(), 1000,
-      "Tag%d corner%d: uv=(%d,%d) depth=%u mm | det-time=%.6f depth-time=%.6f dt=%.4f s | C=(%.4f, %.4f, %.4f) m",
-      target_tag_id_, corner_idx, u, v, depth_mm,
-      det_stamp_sec, depth_stamp_sec, time_diff,
-      out.point.x, out.point.y, out.point.z
-    );
+    if (target_tag_id_ != 10)
+    {
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *this->get_clock(), 1000,
+        "Tag%d corner%d: uv=(%d,%d) depth=%u mm | det-time=%.6f depth-time=%.6f dt=%.4f s | C=(%.4f, %.4f, %.4f) m",
+        target_tag_id_, corner_idx, u, v, depth_mm,
+        det_stamp_sec, depth_stamp_sec, time_diff,
+        out.point.x, out.point.y, out.point.z
+      );
+    }
   }
 
 private:

@@ -249,6 +249,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Hand-Eye Calibration Control Panel")
 
+        self._ros_active = True
+        self._ros_shutdown = False
         self.ros_interface = RosInterface()
         self.ros_interface.real_image_signal.connect(self._update_real_image)
         self.ros_interface.sim_image_signal.connect(self._update_sim_image)
@@ -316,6 +318,9 @@ class MainWindow(QMainWindow):
             ),
             CommandDefinition(
                 "Verify Repeatability (ROS)",
+                "trap 'kill 0' EXIT; "
+                "ros2 run kinect tag4_corner0_3d_node "
+                "--ros-args -p target_tag_id:=10 & "
                 "ros2 run handeye_verify verify_repeatability",
             ),
             CommandDefinition(
@@ -505,7 +510,12 @@ class MainWindow(QMainWindow):
         self.ros_interface.set_marked_topic(self.marked_topic_edit.currentText())
 
     def _spin_ros(self) -> None:
-        rclpy.spin_once(self.ros_interface.node, timeout_sec=0)
+        if not self._ros_active or not rclpy.ok():
+            return
+        node = self.ros_interface.node
+        if node is None:
+            return
+        rclpy.spin_once(node, timeout_sec=0)
 
     def _append_log(self, text: str) -> None:
         self.log_output.moveCursor(QTextCursor.End)
@@ -584,14 +594,21 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def shutdown(self) -> None:
+        if self._ros_shutdown:
+            return
+        self._ros_active = False
+        self._ros_shutdown = True
         self.spin_timer.stop()
         self.status_timer.stop()
         self.build_runner.stop()
         for control in self.command_controls:
             control.stop()
         self.ros_interface.shutdown()
-        self.ros_interface.node.destroy_node()
-        rclpy.shutdown()
+        if self.ros_interface.node is not None:
+            self.ros_interface.node.destroy_node()
+            self.ros_interface.node = None
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 def main() -> None:
