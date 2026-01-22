@@ -225,6 +225,7 @@ class Tag4ScrewToucher(Node):
         self.declare_parameter("z_max", 2.00)
         self.declare_parameter("speed", 0.10)
         self.declare_parameter("acc", 0.30)
+        self.declare_parameter("log_pose_detail", False)
 
         # -----------------------------
         # Load Transformations
@@ -464,10 +465,13 @@ class Tag4ScrewToucher(Node):
         goal.speed = float(speed)
         goal.acc = float(acc)
 
-        self.get_logger().info(
-            f"[{label}] pose6: x={pose6[0]:+.6f}, y={pose6[1]:+.6f}, z={pose6[2]:+.6f}, "
-            f"rx={pose6[3]:+.4f}, ry={pose6[4]:+.4f}, rz={pose6[5]:+.4f}"
-        )
+        if bool(self.get_parameter("log_pose_detail").value):
+            self.get_logger().info(
+                f"[{label}] pose6: x={pose6[0]:+.6f}, y={pose6[1]:+.6f}, z={pose6[2]:+.6f}, "
+                f"rx={pose6[3]:+.4f}, ry={pose6[4]:+.4f}, rz={pose6[5]:+.4f}"
+            )
+        else:
+            self.get_logger().info(f"[{label}] sending motion command")
 
         if not self.action_client.wait_for_server(timeout_sec=5.0):
             self.get_logger().error("Action server not available.")
@@ -756,9 +760,12 @@ def main():
             if mode == "repeatability":
                 node.get_logger().info("Running repeatability test...")
                 ok = node.run_repeatability()
+            elif mode == "touch":
+                node.get_logger().info("Running touch sequence...")
+                ok = node.run_once_touch()
             else:
                 node.get_logger().error(
-                    "Touch mode is currently disabled. Use the repeatability entry point instead."
+                    "Unknown test_mode. Use 'repeatability' or 'touch'."
                 )
                 ok = False
 
