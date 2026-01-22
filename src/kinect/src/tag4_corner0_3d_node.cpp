@@ -266,7 +266,14 @@ private:
         return;
       }
 
-      // Use AprilTag center directly (simpler than PnP)
+      // Publish 3D points for each corner (for touch mode)
+      for (size_t i = 0; i < tag->corners.size(); ++i)
+      {
+        const auto &corner = tag->corners[i];
+        processCorner(static_cast<int>(i), color_stamp_sec, corner.x, corner.y);
+      }
+
+      // Publish tag center (for repeatability mode)
       processCenterFromTag(tag, color_stamp_sec, color_stamp);
     }
     catch (const std::exception& e)
