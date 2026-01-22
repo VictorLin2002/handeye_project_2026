@@ -320,14 +320,14 @@ class MainWindow(QMainWindow):
                 "Verify Repeatability (ROS)",
                 "trap 'kill 0' EXIT; "
                 "ros2 run kinect tag4_corner0_3d_node "
-                "--ros-args -p target_tag_id:=10 & "
+                "--ros-args -p target_tag_id:=10 -p max_time_diff:=0.1 & "
                 "ros2 run handeye_verify verify_repeatability",
             ),
             CommandDefinition(
                 "Verify Touch (ROS)",
                 "trap 'kill 0' EXIT; "
                 "ros2 run kinect tag4_corner0_3d_node "
-                "--ros-args -p target_tag_id:=10 & "
+                "--ros-args -p target_tag_id:=10 -p max_time_diff:=0.1 & "
                 "ros2 run handeye_verify verify_handeye_touch",
             ),
             CommandDefinition(
@@ -515,7 +515,10 @@ class MainWindow(QMainWindow):
         node = self.ros_interface.node
         if node is None:
             return
-        rclpy.spin_once(node, timeout_sec=0)
+        try:
+            rclpy.spin_once(node, timeout_sec=0)
+        except rclpy._rclpy_pybind11.RCLError:
+            pass
 
     def _append_log(self, text: str) -> None:
         self.log_output.moveCursor(QTextCursor.End)
