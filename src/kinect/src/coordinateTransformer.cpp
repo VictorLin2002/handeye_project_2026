@@ -328,14 +328,79 @@ cv::Point2f CoordinateTransformer::CCS2ICS(float X, float Y, float Z) const
     k4a_calibration_3d_to_2d(
         &m_tf.calib(),
         &point3d,
-        K4A_CALIBRATION_TYPE_COLOR, 
-        K4A_CALIBRATION_TYPE_COLOR, 
+        K4A_CALIBRATION_TYPE_COLOR,
+        K4A_CALIBRATION_TYPE_COLOR,
         &pixel,
         &valid
     );
 
     if (valid)
         return cv::Point2f(pixel.xy.x, pixel.xy.y);
+    else
+        return cv::Point2f(NAN, NAN);
+}
+
+cv::Point3f CoordinateTransformer::ICS2CCS_DepthToColor(float x_depth, float y_depth, uint16_t depth_mm) const
+{
+    // 0 indicates invalid depth
+    if (depth_mm == 0) return cv::Point3f(NAN, NAN, NAN);
+
+    k4a_float2_t pixel = {x_depth, y_depth};
+    k4a_float3_t point3d;
+    int valid = 0;
+
+    // Source: Depth camera image coordinates
+    // Target: Color camera 3D coordinates
+    k4a_calibration_2d_to_3d(
+        &m_tf.calib(),
+        &pixel,
+        static_cast<float>(depth_mm),
+        K4A_CALIBRATION_TYPE_DEPTH,   // source: depth camera
+        K4A_CALIBRATION_TYPE_COLOR,   // target: color camera frame
+        &point3d,
+        &valid
+    );
+
+    if (valid)
+        return cv::Point3f(point3d.xyz.x, point3d.xyz.y, point3d.xyz.z); // unit: mm
+    else
+        return cv::Point3f(NAN, NAN, NAN);
+}
+
+cv::Point2f CoordinateTransformer::colorPixelToDepthPixel(float u_color, float v_color, float estimated_depth_mm) const
+{
+    // Step 1: Unproject color pixel to 3D point in color camera frame
+    k4a_float2_t color_pixel = {u_color, v_color};
+    k4a_float3_t point3d_color;
+    int valid = 0;
+
+    k4a_calibration_2d_to_3d(
+        &m_tf.calib(),
+        &color_pixel,
+        estimated_depth_mm,
+        K4A_CALIBRATION_TYPE_COLOR,
+        K4A_CALIBRATION_TYPE_COLOR,
+        &point3d_color,
+        &valid
+    );
+
+    if (!valid) return cv::Point2f(NAN, NAN);
+
+    // Step 2: Project 3D point to depth camera image
+    k4a_float2_t depth_pixel;
+    valid = 0;
+
+    k4a_calibration_3d_to_2d(
+        &m_tf.calib(),
+        &point3d_color,
+        K4A_CALIBRATION_TYPE_COLOR,   // source: color camera frame
+        K4A_CALIBRATION_TYPE_DEPTH,   // target: depth camera image
+        &depth_pixel,
+        &valid
+    );
+
+    if (valid)
+        return cv::Point2f(depth_pixel.xy.x, depth_pixel.xy.y);
     else
         return cv::Point2f(NAN, NAN);
 }

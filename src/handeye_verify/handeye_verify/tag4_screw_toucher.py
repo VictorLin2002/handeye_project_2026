@@ -198,7 +198,7 @@ class Tag4ScrewToucher(Node):
             [
                 1.0, 0.0, 0.0, -0.000,
                 0.0, 1.0, 0.0, -0.00,
-                0.0, 0.0, 1.0, 0.2308,
+                0.0, 0.0, 1.0, 0.255,
                 0.0, 0.0, 0.0, 1.0,
             ],
         )
@@ -208,6 +208,7 @@ class Tag4ScrewToucher(Node):
         # Parameters: Motion
         # -----------------------------
         self.declare_parameter("approach_dist", 0.005)  # meters
+        self.declare_parameter("lift_after_touch_mm", 150.0)  # lift up after touch for tag visibility
         self.declare_parameter("visit_touch", True)
         self.declare_parameter("repeat_touch", False)
         self.declare_parameter("repeat_interval_sec", 0.5)
@@ -229,9 +230,9 @@ class Tag4ScrewToucher(Node):
         # Load Transformations
         # -----------------------------
         self.declare_parameter("T_base_camera", [
-            0.740591, 0.408351, -0.533642, 0.504284,
-            0.671952, -0.452763, 0.586078, -0.989014,
-            -0.002288, -0.792626, -0.609704, 0.655610,
+            0.745709, 0.411757, -0.523806, 0.482398,
+            0.666233, -0.452435, 0.592820, -0.987982,
+            0.007109, -0.791049, -0.611712, 0.631197,
             0.0, 0.0, 0.0, 1.0
         ])
         T_BC_list = self.get_parameter("T_base_camera").value
@@ -628,6 +629,17 @@ class Tag4ScrewToucher(Node):
                 if not self._send_pose6(pose6_app, f"P{idx}:{name}:RETREAT"):
                     return False
                 self._pause_here(f"P{idx}:{name}:RETREAT")
+
+                # Lift up after touch for tag visibility
+                lift_mm = float(self.get_parameter("lift_after_touch_mm").value)
+                if lift_mm > 0.0:
+                    p_lift = p_approach.copy()
+                    p_lift[2] += lift_mm * 0.001  # convert mm to m
+                    pose6_lift = self._compute_flange_pose6_B(p_lift, tcp_z)
+                    if pose6_lift is not None and self._safety_check(pose6_lift[:3]):
+                        if not self._send_pose6(pose6_lift, f"P{idx}:{name}:LIFT"):
+                            return False
+                        self._pause_here(f"P{idx}:{name}:LIFT")
 
         return True
 

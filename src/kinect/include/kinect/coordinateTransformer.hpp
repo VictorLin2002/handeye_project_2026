@@ -257,8 +257,16 @@ public:
     // Defaults to Color Camera coordinate system (suitable for passing AprilTag pixel coordinates directly)
     cv::Point3f ICS2CCS(float x, float y, uint16_t depth_mm) const;
 
+    // Input: Depth camera 2D pixel (x, y) & depth (mm) -> Output: 3D coordinates in Color camera frame (mm)
+    // Use this for raw depth images (not aligned to color)
+    cv::Point3f ICS2CCS_DepthToColor(float x_depth, float y_depth, uint16_t depth_mm) const;
+
     // Input: 3D coordinates (x, y, z) in mm -> Output: 2D pixel coordinates (x, y)
     cv::Point2f CCS2ICS(float X, float Y, float Z) const;
+
+    // Input: Color image pixel -> Output: Depth image pixel (approximate, without depth lookup)
+    // Uses extrinsic parameters only, suitable for initial estimation
+    cv::Point2f colorPixelToDepthPixel(float u_color, float v_color, float estimated_depth_mm) const;
 
     // Input: Color image pixel -> Output: Depth image pixel (used for parallax correction/lookup)
     // Requires the current raw depth image

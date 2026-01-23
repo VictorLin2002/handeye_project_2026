@@ -31,6 +31,7 @@
 #include <limits>
 #include <array>
 #include <unordered_map>
+#include <unordered_set>
 #include <memory>
 #include <deque>
 #include <numeric>
@@ -48,6 +49,10 @@ public:
     this->declare_parameter<std::string>("raw_calib_topic", "kinect/raw_calibration");
     this->declare_parameter<std::string>("color_topic", "color/image_raw");
     this->declare_parameter<std::string>("depth_topic", "depth/aligned_depth_to_color");
+    this->declare_parameter<std::string>("raw_depth_topic", "depth/image_raw");
+
+    // Use raw depth for SVD (more accurate coordinate transformation)
+    this->declare_parameter<bool>("use_raw_depth_for_svd", true);
 
     this->declare_parameter<std::string>("object_pose_topic", "apriltag/object_pose");
     this->declare_parameter<std::string>("object_pose_pnp_topic", "apriltag/object_pose_pnp");
@@ -105,6 +110,10 @@ public:
 
     // Optional sanity gate: if depth-based translation differs too much from PnP translation, fallback to PnP
     this->declare_parameter<double>("depth_vs_pnp_gate_mm", 30.0);
+
+    // ---------- NEW: SVD depth offset compensation ----------
+    // Compensate for systematic depth bias in ToF sensor (positive = sensor reads too far)
+    this->declare_parameter<double>("svd_depth_offset_mm", 22.5);
 
     // ---------- Read parameters ----------
     camera_frame_id_ = this->get_parameter("camera_frame_id").as_string();
@@ -167,12 +176,14 @@ public:
         qos_latched,
         std::bind(&TagLocalizerNode::rawCalibCb, this, std::placeholders::_1));
 
-    // ---------- ExactTime synchronization: color + aligned depth ----------
+    // ---------- ExactTime synchronization: color + aligned depth + raw depth ----------
     {
       auto qos = rclcpp::SensorDataQoS().get_rmw_qos_profile();
 
       const std::string color_topic = this->get_parameter("color_topic").as_string();
       const std::string aligned_topic = this->get_parameter("depth_topic").as_string();
+      const std::string raw_depth_topic = this->get_parameter("raw_depth_topic").as_string();
+      use_raw_depth_for_svd_ = this->get_parameter("use_raw_depth_for_svd").as_bool();
 
       mf_color_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>(
           this, color_topic, qos);
@@ -180,15 +191,20 @@ public:
       mf_aligned_depth_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>(
           this, aligned_topic, qos);
 
+      mf_raw_depth_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>(
+          this, raw_depth_topic, qos);
+
       const int queue_size = 30;
-      sync_exact_ = std::make_shared<message_filters::TimeSynchronizer<
-          sensor_msgs::msg::Image, sensor_msgs::msg::Image>>(*mf_color_, *mf_aligned_depth_, queue_size);
+      sync_exact_3_ = std::make_shared<message_filters::TimeSynchronizer<
+          sensor_msgs::msg::Image, sensor_msgs::msg::Image, sensor_msgs::msg::Image>>(
+          *mf_color_, *mf_aligned_depth_, *mf_raw_depth_, queue_size);
 
-      sync_exact_->registerCallback(std::bind(&TagLocalizerNode::onSyncedImages, this,
-                                              std::placeholders::_1, std::placeholders::_2));
+      sync_exact_3_->registerCallback(std::bind(&TagLocalizerNode::onSyncedImages3, this,
+                                                std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 
-      RCLCPP_INFO(get_logger(), "ExactTime sync enabled: color='%s', aligned_depth='%s', queue=%d",
-                  color_topic.c_str(), aligned_topic.c_str(), queue_size);
+      RCLCPP_INFO(get_logger(), "ExactTime 3-way sync enabled: color='%s', aligned='%s', raw='%s', queue=%d",
+                  color_topic.c_str(), aligned_topic.c_str(), raw_depth_topic.c_str(), queue_size);
+      RCLCPP_INFO(get_logger(), "use_raw_depth_for_svd=%s", use_raw_depth_for_svd_ ? "true" : "false");
     }
 
     // ---------- Initialize stats ----------
@@ -319,15 +335,17 @@ private:
   }
 
   // -------------------------
-  // ExactTime synced callback
+  // ExactTime synced callback (3-way: color + aligned_depth + raw_depth)
   // -------------------------
-  void onSyncedImages(const sensor_msgs::msg::Image::ConstSharedPtr &color_msg,
-                      const sensor_msgs::msg::Image::ConstSharedPtr &aligned_depth_msg)
+  void onSyncedImages3(const sensor_msgs::msg::Image::ConstSharedPtr &color_msg,
+                       const sensor_msgs::msg::Image::ConstSharedPtr &aligned_depth_msg,
+                       const sensor_msgs::msg::Image::ConstSharedPtr &raw_depth_msg)
   {
     ct::CoordinateTransformer *transformer_raw = nullptr;
     int depth_min_mm = 0;
     int depth_max_mm = 0;
     std::string camera_frame_id_local;
+    bool use_raw_depth = false;
 
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -343,10 +361,11 @@ private:
       depth_min_mm = depth_min_mm_;
       depth_max_mm = depth_max_mm_;
       camera_frame_id_local = camera_frame_id_;
+      use_raw_depth = use_raw_depth_for_svd_;
     }
 
-    processImages(color_msg, aligned_depth_msg, transformer_raw,
-                  depth_min_mm, depth_max_mm, camera_frame_id_local);
+    processImages(color_msg, aligned_depth_msg, raw_depth_msg, transformer_raw,
+                  depth_min_mm, depth_max_mm, camera_frame_id_local, use_raw_depth);
   }
 
   // -------------------------
@@ -498,6 +517,194 @@ private:
     return result;
   }
 
+  // -------------------------
+  // Helper: Sample median depth from raw depth image at given pixel location
+  // -------------------------
+  uint16_t sampleMedianDepth(const cv::Mat &raw_depth_img, float px, float py,
+                              int min_mm, int max_mm, int window_radius, int min_valid_count)
+  {
+    const int cols = raw_depth_img.cols;
+    const int rows = raw_depth_img.rows;
+
+    const int uc = std::max(0, std::min(cols - 1, static_cast<int>(std::lround(px))));
+    const int vc = std::max(0, std::min(rows - 1, static_cast<int>(std::lround(py))));
+
+    const int r = std::max(0, window_radius);
+    const int u_min = std::max(0, uc - r);
+    const int u_max = std::min(cols - 1, uc + r);
+    const int v_min = std::max(0, vc - r);
+    const int v_max = std::min(rows - 1, vc + r);
+
+    std::vector<uint16_t> samples;
+    samples.reserve(static_cast<size_t>((u_max - u_min + 1) * (v_max - v_min + 1)));
+
+    for (int y = v_min; y <= v_max; ++y)
+    {
+      const uint16_t *row_ptr = raw_depth_img.ptr<uint16_t>(y);
+      for (int x = u_min; x <= u_max; ++x)
+      {
+        const uint16_t d = row_ptr[x];
+        if (d == 0) continue;
+        if (d < static_cast<uint16_t>(min_mm) || d > static_cast<uint16_t>(max_mm)) continue;
+        samples.push_back(d);
+      }
+    }
+
+    if (static_cast<int>(samples.size()) < std::max(1, min_valid_count))
+    {
+      return 0;
+    }
+
+    return medianNoModify(samples);
+  }
+
+  // -------------------------
+  // Get 3D point using RAW depth image + DEPTH→COLOR transformation
+  // This uses iterative refinement to correct for parallax errors
+  // -------------------------
+  std::optional<Point3DQuality> get3DPointRaw(const cv::Mat &raw_depth_img,
+                                              float u_color, float v_color,
+                                              int min_mm, int max_mm,
+                                              ct::CoordinateTransformer *transformer)
+  {
+    if (!transformer) return std::nullopt;
+    if (raw_depth_img.empty()) return std::nullopt;
+    if (raw_depth_img.type() != CV_16UC1) return std::nullopt;
+
+    if (!std::isfinite(u_color) || !std::isfinite(v_color)) return std::nullopt;
+
+    const int cols = raw_depth_img.cols;
+    const int rows = raw_depth_img.rows;
+
+    // Iterative refinement to correct for parallax
+    // Start with center of depth range, then refine using actual sampled depth
+    float current_depth_estimate = static_cast<float>((min_mm + max_mm) / 2);
+    cv::Point2f depth_pixel;
+    uint16_t sampled_depth = 0;
+
+    constexpr int kMaxIterations = 3;
+    for (int iter = 0; iter < kMaxIterations; ++iter)
+    {
+      // Project color pixel to depth image coordinates using current depth estimate
+      depth_pixel = transformer->colorPixelToDepthPixel(u_color, v_color, current_depth_estimate);
+      if (!std::isfinite(depth_pixel.x) || !std::isfinite(depth_pixel.y))
+      {
+        return std::nullopt;
+      }
+
+      if (depth_pixel.x < 0.0f || depth_pixel.x >= static_cast<float>(cols) ||
+          depth_pixel.y < 0.0f || depth_pixel.y >= static_cast<float>(rows))
+      {
+        return std::nullopt;
+      }
+
+      // Sample depth at projected location
+      sampled_depth = sampleMedianDepth(raw_depth_img, depth_pixel.x, depth_pixel.y,
+                                         min_mm, max_mm, depth_window_radius_, depth_min_valid_count_);
+      if (sampled_depth == 0) return std::nullopt;
+
+      // Check for convergence (depth estimate close to sampled depth)
+      const float depth_diff = std::abs(current_depth_estimate - static_cast<float>(sampled_depth));
+      if (depth_diff < 5.0f)  // Converged within 5mm
+      {
+        break;
+      }
+
+      // Update estimate for next iteration
+      current_depth_estimate = static_cast<float>(sampled_depth);
+    }
+
+    // Use the refined sampled depth for 3D transformation
+    uint16_t depth_mm_final = sampled_depth;
+
+    // Final depth pixel location after refinement
+    const int uc = std::max(0, std::min(cols - 1, static_cast<int>(std::lround(depth_pixel.x))));
+    const int vc = std::max(0, std::min(rows - 1, static_cast<int>(std::lround(depth_pixel.y))));
+
+    // Apply outlier trimming if enabled - re-sample with final depth pixel location
+    const int outlier_thresh = std::max(0, depth_outlier_thresh_mm_);
+    std::vector<uint16_t> final_samples;
+
+    if (outlier_thresh > 0)
+    {
+      const int r = std::max(0, depth_window_radius_);
+      const int u_min = std::max(0, uc - r);
+      const int u_max = std::min(cols - 1, uc + r);
+      const int v_min = std::max(0, vc - r);
+      const int v_max = std::min(rows - 1, vc + r);
+
+      final_samples.reserve(static_cast<size_t>((u_max - u_min + 1) * (v_max - v_min + 1)));
+
+      for (int y = v_min; y <= v_max; ++y)
+      {
+        const uint16_t *row_ptr = raw_depth_img.ptr<uint16_t>(y);
+        for (int x = u_min; x <= u_max; ++x)
+        {
+          const uint16_t d = row_ptr[x];
+          if (d == 0) continue;
+          if (d < static_cast<uint16_t>(min_mm) || d > static_cast<uint16_t>(max_mm)) continue;
+          final_samples.push_back(d);
+        }
+      }
+
+      // Apply outlier trimming
+      std::vector<uint16_t> trimmed;
+      trimmed.reserve(final_samples.size());
+
+      const int med_i = static_cast<int>(sampled_depth);
+      for (uint16_t d : final_samples)
+      {
+        const int di = static_cast<int>(d);
+        if (std::abs(di - med_i) <= outlier_thresh)
+        {
+          trimmed.push_back(d);
+        }
+      }
+
+      if (static_cast<int>(trimmed.size()) >= std::max(1, depth_min_valid_count_))
+      {
+        depth_mm_final = medianNoModify(trimmed);
+        if (depth_mm_final == 0) return std::nullopt;
+        final_samples = std::move(trimmed);
+      }
+    }
+
+    // Use DEPTH→COLOR transformation (SDK's full transformation chain)
+    cv::Point3f pt3d_mm = transformer->ICS2CCS_DepthToColor(
+        depth_pixel.x, depth_pixel.y, depth_mm_final);
+
+    if (!std::isfinite(pt3d_mm.x) || !std::isfinite(pt3d_mm.y) || !std::isfinite(pt3d_mm.z))
+    {
+      return std::nullopt;
+    }
+
+    // Compute depth std-dev in mm from final samples (for quality assessment)
+    double depth_std_mm = 0.0;
+    if (final_samples.size() > 1)
+    {
+      double mean = 0.0;
+      for (uint16_t d : final_samples) mean += static_cast<double>(d);
+      mean /= static_cast<double>(final_samples.size());
+
+      double var = 0.0;
+      for (uint16_t d : final_samples)
+      {
+        const double diff = static_cast<double>(d) - mean;
+        var += diff * diff;
+      }
+      depth_std_mm = std::sqrt(var / static_cast<double>(final_samples.size()));
+    }
+
+    Point3DQuality result;
+    result.point = Eigen::Vector3d(
+        static_cast<double>(pt3d_mm.x) * 0.001,
+        static_cast<double>(pt3d_mm.y) * 0.001,
+        static_cast<double>(pt3d_mm.z) * 0.001
+    );
+    result.depth_variance_mm = depth_std_mm;
+    return result;
+  }
+
   Eigen::Matrix3d getFilteredRotation(
       int tag_id,
       const Eigen::Matrix3d& R_meas)
@@ -602,15 +809,17 @@ private:
   }
 
   // -------------------------
-  // Process synced color + aligned depth: AprilTag detection + Pose estimation
-  // NEW: Multi-Tag Global PnP (2D→3D) + Multi-Tag SVD (3D→3D) computed simultaneously
+  // Process synced color + aligned depth + raw depth: AprilTag detection + Pose estimation
+  // Multi-Tag Global PnP (2D→3D) + Multi-Tag SVD (3D→3D) computed simultaneously
   // -------------------------
   void processImages(const sensor_msgs::msg::Image::ConstSharedPtr &color_msg,
-                     const sensor_msgs::msg::Image::ConstSharedPtr &depth_msg,
+                     const sensor_msgs::msg::Image::ConstSharedPtr &aligned_depth_msg,
+                     const sensor_msgs::msg::Image::ConstSharedPtr &raw_depth_msg,
                      ct::CoordinateTransformer *transformer,
                      int depth_min_mm,
                      int depth_max_mm,
-                     const std::string &camera_frame_id)
+                     const std::string &camera_frame_id,
+                     bool use_raw_depth_for_svd)
   {
     cv_bridge::CvImageConstPtr color_ptr;
     try
@@ -623,21 +832,33 @@ private:
       return;
     }
 
-    cv_bridge::CvImageConstPtr depth_ptr;
+    cv_bridge::CvImageConstPtr aligned_depth_ptr;
     try
     {
-      depth_ptr = cv_bridge::toCvShare(depth_msg, "16UC1");
+      aligned_depth_ptr = cv_bridge::toCvShare(aligned_depth_msg, "16UC1");
     }
     catch (const std::exception &e)
     {
-      RCLCPP_ERROR(get_logger(), "Exception converting depth image: %s", e.what());
+      RCLCPP_ERROR(get_logger(), "Exception converting aligned depth image: %s", e.what());
+      return;
+    }
+
+    cv_bridge::CvImageConstPtr raw_depth_ptr;
+    try
+    {
+      raw_depth_ptr = cv_bridge::toCvShare(raw_depth_msg, "16UC1");
+    }
+    catch (const std::exception &e)
+    {
+      RCLCPP_ERROR(get_logger(), "Exception converting raw depth image: %s", e.what());
       return;
     }
 
     const cv::Mat &color_img = color_ptr->image;
-    const cv::Mat &depth_img = depth_ptr->image;
+    const cv::Mat &depth_img = aligned_depth_ptr->image;  // For PnP (aligned)
+    const cv::Mat &raw_depth_img = raw_depth_ptr->image;  // For SVD (raw)
 
-    if (color_img.empty() || depth_img.empty())
+    if (color_img.empty() || depth_img.empty() || raw_depth_img.empty())
     {
       RCLCPP_WARN(get_logger(), "Empty image received");
       return;
@@ -703,6 +924,14 @@ private:
     int valid_tag_count = 0;
     std::vector<int> used_tag_ids;
 
+    // ---- First pass: collect valid tags and sort by quality (decision margin) ----
+    struct TagQuality {
+      int tagId;
+      double margin;
+      const TagDetection* det;
+    };
+    std::vector<TagQuality> valid_tags;
+
     for (size_t idx = 0; idx < kOrder.size(); ++idx)
     {
       const int tagId = kOrder[idx];
@@ -724,11 +953,48 @@ private:
         continue;
       }
 
+      valid_tags.push_back({tagId, det.decisionMargin, &det});
+    }
+
+    // Sort by decision margin (descending) and select top 2 for SVD
+    std::sort(valid_tags.begin(), valid_tags.end(),
+              [](const TagQuality& a, const TagQuality& b) { return a.margin > b.margin; });
+
+    std::unordered_set<int> svd_tag_ids;
+    constexpr int kSvdTopTags = 2;
+    for (size_t i = 0; i < std::min(static_cast<size_t>(kSvdTopTags), valid_tags.size()); ++i)
+    {
+      svd_tag_ids.insert(valid_tags[i].tagId);
+    }
+
+    if (!valid_tags.empty())
+    {
+      RCLCPP_INFO(get_logger(), "SVD using top %zu tags: ", svd_tag_ids.size());
+      for (int id : svd_tag_ids)
+      {
+        auto it = std::find_if(valid_tags.begin(), valid_tags.end(),
+                               [id](const TagQuality& t) { return t.tagId == id; });
+        if (it != valid_tags.end())
+        {
+          RCLCPP_INFO(get_logger(), "  Tag %d (margin=%.1f)", id, it->margin);
+        }
+      }
+    }
+
+    // ---- Second pass: collect points for PnP (all tags) and SVD (top 2 tags) ----
+    for (const auto& tq : valid_tags)
+    {
+      const int tagId = tq.tagId;
+      const TagDetection &det = *tq.det;
+      const size_t base_index = static_cast<size_t>(tagId) * kPointsPerTag;
+      const bool use_for_svd = (svd_tag_ids.count(tagId) > 0);
+
       valid_tag_count++;
       used_tag_ids.push_back(tagId);
 
       // ---- DEBUG: Log point mapping ----
-      RCLCPP_INFO(get_logger(), "=== TAG %d (margin=%.1f) ===", tagId, det.decisionMargin);
+      RCLCPP_INFO(get_logger(), "=== TAG %d (margin=%.1f) %s ===",
+                  tagId, det.decisionMargin, use_for_svd ? "[SVD]" : "");
       RCLCPP_INFO(get_logger(), "  Center: det(%.1f, %.1f) -> CAD(%.2f, %.2f, %.2f) mm",
                   det.center.x, det.center.y,
                   cad_points_object_[base_index].x() * 1000.0,
@@ -752,14 +1018,29 @@ private:
             static_cast<float>(pt3d.y() * 1000.0),
             static_cast<float>(pt3d.z() * 1000.0));
 
-        // Get 3D point from depth for SVD
-        auto depth_center = get3DPoint(depth_img, det.center.x, det.center.y,
-                                       depth_min_mm, depth_max_mm, transformer);
-        if (depth_center.has_value())
+        // Get 3D point from depth for SVD (only for top tags)
+        if (use_for_svd)
         {
-          global_pts_O.push_back(cad_points_object_[base_index]);
-          global_pts_C.push_back(depth_center->point);
-          global_depth_stds.push_back(depth_center->depth_variance_mm);
+          std::optional<Point3DQuality> depth_center;
+          if (use_raw_depth_for_svd)
+          {
+            // Use raw depth + DEPTH→COLOR transformation (more accurate)
+            depth_center = get3DPointRaw(raw_depth_img, det.center.x, det.center.y,
+                                         depth_min_mm, depth_max_mm, transformer);
+          }
+          else
+          {
+            // Use aligned depth + COLOR→COLOR transformation (legacy)
+            depth_center = get3DPoint(depth_img, det.center.x, det.center.y,
+                                      depth_min_mm, depth_max_mm, transformer);
+          }
+
+          if (depth_center.has_value())
+          {
+            global_pts_O.push_back(cad_points_object_[base_index]);
+            global_pts_C.push_back(depth_center->point);
+            global_depth_stds.push_back(depth_center->depth_variance_mm);
+          }
         }
       }
 
@@ -775,14 +1056,29 @@ private:
             static_cast<float>(pt3d.y() * 1000.0),
             static_cast<float>(pt3d.z() * 1000.0));
 
-        // Get 3D point from depth for SVD
-        auto depth_corner = get3DPoint(depth_img, det.corners[i].x, det.corners[i].y,
-                                       depth_min_mm, depth_max_mm, transformer);
-        if (depth_corner.has_value())
+        // Get 3D point from depth for SVD (only for top tags)
+        if (use_for_svd)
         {
-          global_pts_O.push_back(cad_points_object_[idx_obj]);
-          global_pts_C.push_back(depth_corner->point);
-          global_depth_stds.push_back(depth_corner->depth_variance_mm);
+          std::optional<Point3DQuality> depth_corner;
+          if (use_raw_depth_for_svd)
+          {
+            // Use raw depth + DEPTH→COLOR transformation (more accurate)
+            depth_corner = get3DPointRaw(raw_depth_img, det.corners[i].x, det.corners[i].y,
+                                         depth_min_mm, depth_max_mm, transformer);
+          }
+          else
+          {
+            // Use aligned depth + COLOR→COLOR transformation (legacy)
+            depth_corner = get3DPoint(depth_img, det.corners[i].x, det.corners[i].y,
+                                      depth_min_mm, depth_max_mm, transformer);
+          }
+
+          if (depth_corner.has_value())
+          {
+            global_pts_O.push_back(cad_points_object_[idx_obj]);
+            global_pts_C.push_back(depth_corner->point);
+            global_depth_stds.push_back(depth_corner->depth_variance_mm);
+          }
         }
       }
     }
@@ -990,24 +1286,40 @@ private:
     {
       std_msgs::msg::Float64MultiArray compare_msg;
 
-      // data[0] = trans_diff_mm
+      // data[0] = trans_diff_mm (total)
       // data[1] = rot_diff_deg
       // data[2] = reproj_px (PnP)
       // data[3] = rmse_mm (SVD)
       // data[4] = tags_used_pnp
       // data[5] = pairs_used_svd
-      compare_msg.data.resize(6, 0.0);
+      // data[6] = trans_diff_x_mm (SVD - PnP)
+      // data[7] = trans_diff_y_mm (SVD - PnP)
+      // data[8] = trans_diff_z_mm (SVD - PnP)
+      compare_msg.data.resize(9, 0.0);
 
       if (pnp_valid && svd_valid)
       {
-        // Translation difference
-        double trans_diff_m = (t_pnp - t_svd).norm();
+        // Translation difference (per-axis for diagnosis)
+        Eigen::Vector3d t_diff = t_svd - t_pnp;  // SVD - PnP
+        double trans_diff_m = t_diff.norm();
         compare_msg.data[0] = trans_diff_m * 1000.0;  // mm
 
         // Rotation difference
         Eigen::Matrix3d R_diff = R_pnp.transpose() * R_svd;
         Eigen::AngleAxisd aa_diff(R_diff);
         compare_msg.data[1] = aa_diff.angle() * 180.0 / M_PI;  // degrees
+
+        // Per-axis translation difference (mm)
+        compare_msg.data[6] = t_diff.x() * 1000.0;
+        compare_msg.data[7] = t_diff.y() * 1000.0;
+        compare_msg.data[8] = t_diff.z() * 1000.0;
+
+        // Detailed logging for diagnosis
+        RCLCPP_INFO(get_logger(),
+                    "[Diagnosis] PnP t=(%.1f, %.1f, %.1f) mm | SVD t=(%.1f, %.1f, %.1f) mm | diff=(%.1f, %.1f, %.1f) mm",
+                    t_pnp.x() * 1000.0, t_pnp.y() * 1000.0, t_pnp.z() * 1000.0,
+                    t_svd.x() * 1000.0, t_svd.y() * 1000.0, t_svd.z() * 1000.0,
+                    t_diff.x() * 1000.0, t_diff.y() * 1000.0, t_diff.z() * 1000.0);
       }
 
       compare_msg.data[2] = pnp_valid ? pnp_reproj_mean_px : -1.0;
@@ -1081,11 +1393,15 @@ private:
 
   std::string camera_frame_id_;
 
-  // message_filters ExactTime sync
+  // message_filters ExactTime sync (3-way: color + aligned_depth + raw_depth)
   std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> mf_color_;
   std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> mf_aligned_depth_;
+  std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> mf_raw_depth_;
   std::shared_ptr<message_filters::TimeSynchronizer<
-      sensor_msgs::msg::Image, sensor_msgs::msg::Image>> sync_exact_;
+      sensor_msgs::msg::Image, sensor_msgs::msg::Image, sensor_msgs::msg::Image>> sync_exact_3_;
+
+  // Use raw depth for SVD
+  bool use_raw_depth_for_svd_ = true;
 
   // Point quality filtering parameters
   double min_decision_margin_ = 30.0;

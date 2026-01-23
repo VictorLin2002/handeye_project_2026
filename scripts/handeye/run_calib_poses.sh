@@ -51,7 +51,8 @@ echo ""
 get_status() {
   # Output: "<count> <obj_stamp_us>" or "-1 -1"
   local line
-  line="$(timeout 1.0 ros2 topic echo -n 1 "${LOGGER_STATUS_TOPIC}" 2>/dev/null || true)"
+  # Use stdbuf to prevent buffering issues and ensure timeout works
+  line="$(timeout --signal=KILL 2.0 stdbuf -oL ros2 topic echo -n 1 "${LOGGER_STATUS_TOPIC}" 2>/dev/null || true)"
   if ! echo "${line}" | grep -q "data:"; then
     echo "-1 -1"
     return 0
@@ -113,13 +114,20 @@ call_capture_once() {
   # Return 0 if action call succeeds, else 1.
   # Always prints action result for debugging.
   local out
-  out="$(timeout "${LOG_WAIT_TIMEOUT_S}" ros2 action send_goal "${CAPTURE_ACTION_NAME}" handeye_logger_interfaces/action/CaptureHandEye "{}" 2>&1 || true)"
+  out="$(timeout --signal=KILL "${LOG_WAIT_TIMEOUT_S}" ros2 action send_goal "${CAPTURE_ACTION_NAME}" handeye_logger_interfaces/action/CaptureHandEye "{}" --feedback 2>&1 || true)"
   if [ -z "${out}" ]; then
     echo "Capture action: no response (timeout or call failed)"
     return 1
   fi
-  # Print response
-  echo "Capture action response: ${out}"
+
+  # Extract and display the failure reason if present
+  local msg
+  msg="$(echo "${out}" | grep -oP "message: '\K[^']*" | tail -n 1 || true)"
+  if [ -n "${msg}" ]; then
+    echo "Capture result: ${msg}"
+  else
+    echo "Capture action response: ${out}"
+  fi
 
   if echo "${out}" | grep -q "status: SUCCEEDED"; then
     return 0
@@ -137,19 +145,21 @@ while IFS=',' read -r x y z rx ry rz; do
 
   read -r before_count before_stamp < <(get_status)
 
-  if ! ros2 action send_goal /move_to_pose rtde_controller_interfaces/action/MoveToPose \
+  if ! timeout --signal=KILL "${POSE_TIMEOUT_S}" ros2 action send_goal /move_to_pose rtde_controller_interfaces/action/MoveToPose \
     "{x: ${x}, y: ${y}, z: ${z}, rx: ${rx}, ry: ${ry}, rz: ${rz}, speed: ${SPEED}, acc: ${ACC}}" \
     --feedback; then
 
-    echo "Action failed for pose: (${x}, ${y}, ${z})" >&2
+    echo "Action failed for pose: (${x}, ${y}, ${z}), skipping to next..." >&2
     if [ "${ASK_ON_FAIL}" = "1" ]; then
       read -r -p "Continue? (y/n) " response
       if [ "${response}" != "y" ]; then
         exit 1
       fi
-    else
-      exit 1
     fi
+    # Continue to next pose
+    LAST_RZ="${rz}"
+    sleep "${POSE_PAUSE_S}"
+    continue
   fi
 
   # Dynamic settle: add extra settle when rz changes a lot (helps Z-rotation tail settling)
