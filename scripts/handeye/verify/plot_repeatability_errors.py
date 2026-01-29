@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
+# ========================================================================
+# DUPLICATE FILE - DO NOT USE
+# ========================================================================
+# This file is a duplicate of:
+#   src/handeye_verify/handeye_verify/plot_repeatability_errors.py
+#
+# Please use the version in the handeye_verify package instead.
+# This file is kept for backward compatibility but should be removed
+# in a future cleanup.
+# ========================================================================
+
 """
+[DEPRECATED - Use src/handeye_verify/handeye_verify/plot_repeatability_errors.py]
+
 Visualization tool for hand-eye calibration repeatability analysis.
 
 Generates comprehensive plots:

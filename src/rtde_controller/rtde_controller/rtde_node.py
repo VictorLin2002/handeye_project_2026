@@ -95,19 +95,9 @@ class RTDEActionNode(Node):
     # ------------------------------------------------------------------
     # Execute goal
     # ------------------------------------------------------------------
-    # ...existing code...
-    def goal_cb(self, goal_request: MoveToPose.Goal):
-        """Validate goal on reception."""
-        self.get_logger().info(f"Received goal: [{goal_request.x:.3f}, {goal_request.y:.3f}, {goal_request.z:.3f}]")
-        
-        # Check workspace constraints
-        ok, msg = self.check_workspace(goal_request.x, goal_request.y, goal_request.z)
-        if not ok:
-            self.get_logger().warn(f"Goal rejected: {msg}")
-            return GoalResponse.REJECT
-        
-        self.get_logger().info("Goal accepted")
-        return GoalResponse.ACCEPT
+    # NOTE: Duplicate goal_cb method removed (was redundant with lines 75-85)
+    # The original goal_cb above includes RTDE connection check which is important
+    # ------------------------------------------------------------------
 
     async def execute_cb(self, goal_handle):
         """Execute the motion goal."""
@@ -153,7 +143,6 @@ class RTDEActionNode(Node):
             goal_handle.abort()
             
         return result
-# ...existing code...
 
     # ------------------------------------------------------------------
     # Workspace check:
